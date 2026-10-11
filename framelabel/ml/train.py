@@ -18,10 +18,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 PRESETS = {
     "abi-person": dict(model=ROOT / "models/yolo26x.pt", data=ROOT / "datasets/abi_person/data.yaml", name="abi_person_y26x",
-                       args=dict(epochs=60, patience=15, imgsz=640, batch=16, cos_lr=True, close_mosaic=10)),
+                       args=dict(epochs=40, patience=10, imgsz=640, batch=16, cos_lr=True, close_mosaic=8)),
     "abi-own": dict(model=ROOT / "train_runs/abi_person_y26x/weights/best.pt", data=ROOT / "datasets/abi_own/data.yaml",
                     name="abi_own_y26x",
-                    args=dict(epochs=80, patience=25, imgsz=1280, batch=4, optimizer="AdamW", lr0=0.0005,
+                    args=dict(epochs=60, patience=20, imgsz=1280, batch=4, optimizer="AdamW", lr0=0.0005,
                               warmup_epochs=2, cos_lr=True, close_mosaic=15, freeze=10)),
 }
 
