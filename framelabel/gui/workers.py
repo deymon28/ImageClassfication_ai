@@ -1,9 +1,11 @@
 """Background jobs for the UI: a QThread running a Python callable with progress and cancel support."""
 from __future__ import annotations
 
-import traceback
+import logging
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
+
+log = logging.getLogger("framelabel.job")
 
 
 class Job(QObject):
@@ -22,8 +24,8 @@ class Job(QObject):
     def run(self) -> None:
         try:
             result = self.fn(*self.args, progress=self.progress.emit, cancelled=self.cancelled, **self.kwargs)
-        except Exception as e:  # reported to the UI; the traceback goes to the console
-            traceback.print_exc()
+        except Exception as e:  # reported to the UI; the traceback goes to the log
+            log.exception("job failed")
             self.failed.emit(f"{type(e).__name__}: {e}")
             return
         self.finished.emit(result)

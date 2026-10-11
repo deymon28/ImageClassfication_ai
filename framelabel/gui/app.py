@@ -3,7 +3,10 @@ boxes on the right. All decisions are saved immediately (labels/<stem>.txt and r
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sys
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
@@ -21,12 +24,14 @@ from framelabel.core.propagate import propagate
 from framelabel.core.queues import FrameInfo
 from framelabel.core.session import Session
 from framelabel.core.workspace import Workspace
+from framelabel.perf import setup_logging, timed
 from .canvas import Canvas
 from .grid import Grid
 from .keys import Keymap, key_name
 from .workers import Job, start_job
 
 ROOT = Path(__file__).resolve().parents[2]
+log = logging.getLogger("framelabel")
 EDIT_QUEUES = [("edit", "To review (proposals / marked)"), ("uncertain", "Uncertain proposals first"),
                ("small", "Small (far) objects first"), ("disagree", "Model disagrees with labels"),
                ("unreviewed", "Not reviewed"), ("todo", "Marked in grid"), ("pos", "Labeled"), ("neg", "Empty"),
@@ -401,7 +406,8 @@ class MainWindow(QMainWindow):
         self.commit_current()
         name = self.queue_box.currentData()
         self.queue = self.ws.queue(name)
-        self.fill_frame_list()
+        with timed("fill_frame_list", 50):
+            self.fill_frame_list()
         if self.mode == "grid":
             first = next((i for i, f in enumerate(self.queue) if f.status is None), 0) if name == "triage" else 0
             self.grid.set_items(self.queue, first // self.grid.per_page,
@@ -461,6 +467,10 @@ class MainWindow(QMainWindow):
         return img
 
     def load_frame(self, idx: int, carried: list[Box] | None = None) -> None:
+        with timed("load_frame", 50):
+            self._load_frame(idx, carried)
+
+    def _load_frame(self, idx: int, carried: list[Box] | None = None) -> None:
         self.idx = min(max(idx, 0), len(self.queue) - 1)
         fi = self.queue[self.idx]
         img = self.read_image(fi.path)
@@ -489,7 +499,8 @@ class MainWindow(QMainWindow):
             return
         if not (self.canvas.dirty or force or status):
             return
-        self.ws.save(self.cur_path, self.canvas.boxes, self.canvas.iw, self.canvas.ih, status)
+        with timed("commit_current", 50):
+            self.ws.save(self.cur_path, self.canvas.boxes, self.canvas.iw, self.canvas.ih, status)
         self.canvas.dirty = False
         if 0 <= self.idx < len(self.queue) and self.queue[self.idx].path == self.cur_path:
             self.queue[self.idx] = self.ws.index[self.ws.by_stem[self.cur_path.stem]]
@@ -937,8 +948,22 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
+def install_excepthooks(app) -> None:
+    """Log unhandled exceptions (PyQt6 aborts the process on one inside a slot) and tell the user."""
+    def hook(tp, value, tb):
+        log.error("unhandled exception", exc_info=(tp, value, tb))
+        if threading.current_thread() is threading.main_thread():  # dialogs only from the GUI thread
+            QMessageBox.critical(None, "framelabel error", f"{tp.__name__}: {value}\n\nDetails are in the log.")
+
+    sys.excepthook = hook
+    threading.excepthook = lambda a: log.error("unhandled exception in thread %s", a.thread and a.thread.name,
+                                               exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+
+
 def run_app(target: Path | None = None) -> int:
+    log_dir = setup_logging()
     app = QApplication.instance() or QApplication(sys.argv)
+    install_excepthooks(app)
     app.setApplicationName("framelabel")
     app.setStyle("Fusion")
     from PyQt6.QtGui import QPalette
@@ -954,4 +979,12 @@ def run_app(target: Path | None = None) -> int:
     app.setPalette(pal)
     w = MainWindow(target)
     w.show()
-    return app.exec()
+    watchdog = None
+    if os.environ.get("FRAMELABEL_WATCHDOG", "1") != "0":
+        from .watchdog import Watchdog
+
+        watchdog = Watchdog(log_dir)
+    code = app.exec()
+    if watchdog is not None:
+        watchdog.stop()
+    return code

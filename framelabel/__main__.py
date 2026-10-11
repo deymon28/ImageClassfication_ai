@@ -121,6 +121,9 @@ def main(argv: list[str] | None = None) -> None:
         from framelabel.ml.train import main as train_main
 
         return train_main(argv[1:])
+    from framelabel.perf import setup_logging
+
+    setup_logging()
     ap = argparse.ArgumentParser(prog="framelabel", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("prelabel", help="model proposals for every frame (GPU, game closed)")
