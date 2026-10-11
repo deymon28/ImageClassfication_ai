@@ -372,6 +372,9 @@ class MainWindow(QMainWindow):
         self.queue_box.setCurrentIndex(k)
         self.queue_box.blockSignals(False)
         self.stack.setCurrentWidget(self.grid if mode == "grid" else self.canvas)
+        if mode == "grid":
+            self.box_table.setRowCount(0)
+            self.cur_path = None
         self.update_help()
         self.on_queue_changed(k)
 
