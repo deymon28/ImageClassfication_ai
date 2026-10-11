@@ -92,6 +92,10 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
 7. **Retrain** (*Auto-label > Retrain*): exports, then fine-tunes a chosen model on your labels in a background
    process (log in the dialog); the result appears in the prelabel model list.
 
+The frame list on the left has a filter box (part of a name or of a tag such as `new`, `empty`); F5 re-reads
+proposals and new frames without leaving the current frame, Ctrl+G jumps to a frame by number or name, and the
+editor reopens where you stopped in each queue. *Edit > Fit all boxes on this frame with SAM* refines every box.
+
 All keys can be changed in *File > Keyboard shortcuts*; letters work in any keyboard layout (a Russian layout
 triggers the same actions).
 
@@ -122,16 +126,39 @@ python -m framelabel eval --data ..\fin_snip_helper\datasets\own\data.yaml --pro
 It reports AP50 and, per confidence, precision, recall, false positives per frame and recall by box height
 (<20, 20-50, 50+ px at 1080p). `NAME=A.pt+B.pt@1536:tta` evaluates an ensemble / another size / TTA.
 
+## Responsiveness
+
+Nothing that can take longer than ~50 ms runs on the window's thread:
+
+* Opening a session (listing, parsed proposal/label files, interface-screen scores) runs in a background thread with
+  a progress bar. Parsed label rows are cached in `%LOCALAPPDATA%\framelabel\cache` (keyed by file time and size, so
+  only changed files are re-read), and interface-screen scores of newly captured frames are computed on their own.
+  A 7000-frame session opens in about half a second with a warm cache.
+* Prelabel runs as a child process (`python -m framelabel prelabel ... --progress-json`), so torch is not loaded into
+  the window and a CUDA failure cannot close it. SAM runs in its own thread. Export (and the export before a retrain)
+  runs in the background and is swapped in atomically: a cancelled export keeps the previous dataset.
+* The editor reads the next frames ahead, the grid reloads tiles only after a window resize settles.
+* *File > Performance settings* sets the I/O threads, the read-ahead and an optional SAM preload.
+
+Logs and caches live in `%LOCALAPPDATA%\framelabel` (override with `FRAMELABEL_HOME` / `FRAMELABEL_CACHE_DIR`):
+`logs/framelabel.log` (rotating), `logs/freeze.log` (the stacks of all threads when the window was blocked for 2 s),
+`cache/` (safe to delete, it is rebuilt). `python tools/profile_session.py projects\abi.yaml` prints open/queue
+timings of the biggest session without writing into it.
+
 ## Safety
 
 GPU work (prelabel, SAM, training, eval) refuses to start while the game process runs (`game_processes`, default
 `UAGame.exe`; the game crashed once from resource overuse), caps PyTorch VRAM, and the UI warns when another Python
-process is using the GPU. Training keeps dataloader workers at 2 (each is a full process on Windows).
+process is using the GPU. Training keeps dataloader workers at 2 (each is a full process on Windows). Prelabel in
+the window is a separate process: *Cancel* stops it after the current batch, and quitting asks before stopping it.
 
 ## Layout
 
 * `framelabel/core` - pure logic: boxes and YOLO files, sessions and `review.json`, project files, queues,
-  splitting and export, interface-screen detection, box tracking, undo history, view math.
+  splitting and export, interface-screen detection, box tracking, undo history, view math, `index_cache.py`
+  (cached label rows, `Cancelled`).
 * `framelabel/ml` - GPU parts: guard, model registry, prediction + WBF, SAM fitting, evaluation, training.
-* `framelabel/gui` - PyQt6 window, canvas, grid, dialogs, keymap, background jobs.
-* `tools/` - labeler data preparation; `tests/` - pytest (GUI tests run headless).
+* `framelabel/gui` - PyQt6 window, canvas, grid, dialogs, keymap; background work: `workers.py` (thread jobs),
+  `process_job.py` (child processes), `sam_worker.py`, `frame_list.py` (model/view), `watchdog.py`.
+* `framelabel/perf.py` - logging setup, timing helper, per-user app folder.
+* `tools/` - labeler data preparation, `profile_session.py`; `tests/` - pytest (GUI tests run headless).
