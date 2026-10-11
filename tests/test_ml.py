@@ -5,7 +5,7 @@ from framelabel.ml.evaluate import Split, average_precision, class_map_by_name, 
 from framelabel.ml.fusion import weighted_boxes_fusion
 from framelabel.ml.models import scan_models
 from framelabel.ml.predict import rows_for, tta_sizes
-from framelabel.ml.sam import crop_window, mask_box
+from framelabel.ml.sam import crop_window, mask_box, mask_box_within
 
 
 def test_wbf_merges_overlaps_and_downweights_single_votes():
@@ -90,3 +90,13 @@ def test_sam_crop_and_mask_box():
     assert mask_box(m, near=(8, 12)) == (5.0, 10.0, 15.0, 20.0)
     assert mask_box(m) == (30.0, 30.0, 48.0, 45.0)
     assert mask_box(np.zeros((5, 5))) is None
+
+
+def test_mask_box_within_joins_occluded_parts_and_drops_specks():
+    m = np.zeros((100, 100), np.uint8)
+    m[20:80, 30:40] = 1   # left half of a person behind a pole
+    m[20:80, 46:56] = 1   # right half
+    m[50:52, 70:72] = 1   # a speck of background inside the prompt
+    m[0:10, 0:10] = 1     # another object outside the prompt
+    assert mask_box_within(m, 25, 15, 75, 85) == (30.0, 20.0, 56.0, 80.0)
+    assert mask_box_within(m, 90, 90, 99, 99) is None

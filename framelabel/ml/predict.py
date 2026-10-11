@@ -61,8 +61,9 @@ class Predictor:
 
     def _passes(self, model, images: list[np.ndarray], imgsz: int, flip: bool):
         src = [cv2.flip(im, 1) for im in images] if flip else images
-        res = model.predict(source=src, imgsz=imgsz, conf=self.cfg.conf, half=self.cfg.half, device=self.cfg.device,
-                            max_det=self.cfg.max_det, verbose=False)
+        extra = {"quantize": 16} if self.cfg.half else {}
+        res = model.predict(source=src, imgsz=imgsz, conf=self.cfg.conf, device=self.cfg.device,
+                            max_det=self.cfg.max_det, verbose=False, **extra)
         out = []
         for im, r in zip(images, res):
             b = r.boxes
