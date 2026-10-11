@@ -58,6 +58,7 @@ class Grid(QWidget):
         self.press: QPointF | None = None
         self.last: QPointF | None = None
         self.title = ""
+        self.message = ""  # shown instead of the tiles when there are none (e.g. while a session loads)
         self.class_colors: list[QColor] = [QColor("#ff2828")]
 
     @property
@@ -142,7 +143,7 @@ class Grid(QWidget):
             return
         if not self.items:
             p.setPen(QColor(160, 160, 160))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No frames in this view")
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.message or "No frames in this view")
             return
         x0, y0, tw, th = self.layout_now()
         tiles = self.tiles(tw, th)

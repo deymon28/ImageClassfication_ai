@@ -12,12 +12,12 @@ from .uiscreen import ui_scores
 
 
 class Workspace:
-    def __init__(self, project: Project, session: Session, conf: float = 0.3, progress=None):
+    def __init__(self, project: Project, session: Session, conf: float = 0.3, progress=None, cancelled=None):
         self.project, self.session, self.conf = project, session, conf
         self.review = session.review(project.class_names)
         frames = session.frames()
-        self.ui = ui_scores(session, frames, project.ui_zone, progress) if project.ui_zone else {}
-        self.index: list[FrameInfo] = build_index(session, self.review, project.ignore_zones, self.ui)
+        self.ui = ui_scores(session, frames, project.ui_zone, progress, cancelled) if project.ui_zone else {}
+        self.index: list[FrameInfo] = build_index(session, self.review, project.ignore_zones, self.ui, progress, cancelled)
         self.by_stem = {fi.stem: i for i, fi in enumerate(self.index)}
 
     # ---------------- index
@@ -27,9 +27,9 @@ class Workspace:
                                    self.ui.get(stem, 1.0))
         return self.index[i]
 
-    def reload(self) -> None:
+    def reload(self, progress=None, cancelled=None) -> None:
         self.review = self.session.review(self.project.class_names)
-        self.index = build_index(self.session, self.review, self.project.ignore_zones, self.ui)
+        self.index = build_index(self.session, self.review, self.project.ignore_zones, self.ui, progress, cancelled)
         self.by_stem = {fi.stem: i for i, fi in enumerate(self.index)}
 
     def queue(self, name: str, **kw) -> list[FrameInfo]:

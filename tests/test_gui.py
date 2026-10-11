@@ -1,13 +1,14 @@
 """Headless smoke tests of the window: open a session, triage a grid page, draw / edit / save boxes with the keyboard
 and mouse handlers."""
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
-from PyQt6.QtCore import QPoint, QSettings, Qt  # noqa: E402
+from PyQt6.QtCore import QPoint, Qt  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
@@ -16,13 +17,41 @@ from framelabel.core.project import Project  # noqa: E402
 
 @pytest.fixture(scope="module")
 def app():
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def close_windows(app):
+    """Destroy the test's windows deterministically (and collect the garbage) before the next test: a window that is
+    only freed by a later garbage collection can be deleted at an arbitrary moment and crash Qt."""
+    yield
+    import gc
+
+    for w in QApplication.topLevelWidgets():
+        w.close()
+        w.deleteLater()
+    app.processEvents()
+    QApplication.sendPostedEvents(None, 0)  # QEvent.DeferredDelete
+    gc.collect()
+
+
+def wait_until(app, cond, timeout=15.0):
+    end = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < end, "timed out"
+        app.processEvents()
+        time.sleep(0.01)
+
+
+def open_and_wait(app, w, path):
+    w.open_target(path)
+    wait_until(app, lambda: w.ws is not None and w.loader is None)
 
 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
-    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))  # keep QSettings away from the user's settings
+    # keep the settings (recent projects, geometry, keymap) away from the user's real ones (the registry)
+    monkeypatch.setenv("FRAMELABEL_SETTINGS_FILE", str(tmp_path / "settings.ini"))
     s = tmp_path / "session_20261008_100000"
     (s / "frames").mkdir(parents=True)
     (s / "labels_auto").mkdir()
@@ -39,9 +68,9 @@ def test_grid_then_editor_flow(app, project):
     from framelabel.gui.app import MainWindow
 
     path, s = project
-    w = MainWindow(path)
+    w = MainWindow()
     w.settings.clear()
-    w.open_target(path)
+    open_and_wait(app, w, path)
     w.resize(1200, 800)
     w.show()
     app.processEvents()
@@ -126,3 +155,33 @@ def test_loupe_zoom_is_adjustable_and_bounded(app):
     for _ in range(50):
         c.change_loupe_zoom(0.8)
     assert c.loupe_zoom == LOUPE_MIN
+
+
+def test_switching_sessions_quickly_loads_the_last_one(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    s2 = s.parent / "session_20261008_110000"
+    (s2 / "frames").mkdir(parents=True)
+    cv2.imwrite(str(s2 / "frames" / "110000_000.jpg"), np.zeros((180, 320, 3), np.uint8))
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.on_session_changed(0)
+    w.on_session_changed(1)
+    wait_until(app, lambda: w.loader is None and w.ws is not None)
+    assert w.ws.session.name == w.sessions[1].name == s2.name
+    w.close()
+
+
+def test_keys_during_loading_are_ignored(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, _ = project
+    w = MainWindow()
+    w.settings.clear()
+    w.open_target(path)
+    assert w.ws is None and w.loader is not None
+    assert w.handle_key("Space") is False
+    wait_until(app, lambda: w.loader is None and w.ws is not None)
+    w.close()

@@ -381,3 +381,31 @@ def test_build_index_cancel(tmp_path):
         s.auto_path(f"extra{i}").write_text("0 0.5 0.5 0.1 0.1 0.5")
     with pytest.raises(Cancelled):
         build_index(s, s.review(), cancelled=lambda: True)
+
+
+def test_ui_scores_incremental(tmp_path, monkeypatch):
+    s = Session.open(_ui_session(tmp_path, n_game=12, n_ui=2))
+    first = ui_scores(s, s.frames(), HUD[0])
+    rng = np.random.default_rng(1)
+    game = rng.integers(60, 120, (360, 640, 3), dtype=np.uint8)
+    cv2.rectangle(game, (14, 285), (30, 320), (230, 230, 230), -1)
+    cv2.circle(game, (22, 278), 6, (230, 230, 230), -1)
+    menu = np.full((360, 640, 3), 15, np.uint8)
+    cv2.imwrite(str(s.images_dir / "109998_000.jpg"), game)
+    cv2.imwrite(str(s.images_dir / "109999_000.jpg"), menu)
+    read = []
+    real = cv2.imread
+    monkeypatch.setattr(cv2, "imread", lambda path, *a: (read.append(path), real(path, *a))[1])
+    again = ui_scores(s, s.frames(), HUD[0])
+    assert sorted(p.split("\\")[-1].split("/")[-1] for p in read) == ["109998_000.jpg", "109999_000.jpg"]
+    assert again["109998_000"] > 0.6 and again["109999_000"] < 0.3
+    assert all(again[k] == v for k, v in first.items())  # old scores are kept as they were
+
+
+def test_ui_scores_cancel(tmp_path):
+    from framelabel.core.index_cache import Cancelled
+
+    s = Session.open(_ui_session(tmp_path))
+    with pytest.raises(Cancelled):
+        ui_scores(s, s.frames(), HUD[0], cancelled=lambda: True)
+    assert not (s.root / "ui_scores.json").exists()

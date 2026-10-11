@@ -11,7 +11,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
-from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QTimer
+from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
                              QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
@@ -28,7 +28,7 @@ from framelabel.perf import setup_logging, timed
 from .canvas import Canvas
 from .grid import Grid
 from .keys import Keymap, key_name
-from .workers import Job, start_job
+from .workers import Job, start_job, stop_jobs
 
 ROOT = Path(__file__).resolve().parents[2]
 log = logging.getLogger("framelabel")
@@ -47,10 +47,20 @@ def color_icon(color: str, size: int = 12) -> QIcon:
     return QIcon(pm)
 
 
+def make_settings() -> QSettings:
+    """The user's settings (registry on Windows); FRAMELABEL_SETTINGS_FILE selects an INI file instead (tests)."""
+    path = os.environ.get("FRAMELABEL_SETTINGS_FILE")
+    if path:
+        return QSettings(path, QSettings.Format.IniFormat)
+    return QSettings("framelabel", "framelabel")
+
+
 class MainWindow(QMainWindow):
+    session_loaded = pyqtSignal()  # a session's workspace was applied (also used by tests)
+
     def __init__(self, target: Path | None = None):
         super().__init__()
-        self.settings = QSettings("framelabel", "framelabel")
+        self.settings = make_settings()
         self.keymap = Keymap(json.loads(self.settings.value("keymap", "{}") or "{}"))
         self.project: Project | None = None
         self.sessions: list[Session] = []
@@ -63,6 +73,7 @@ class MainWindow(QMainWindow):
         self.pool = ThreadPoolExecutor(2)
         self.fitter = None
         self.job = None
+        self.loader: Job | None = None  # the session being loaded in the background
         self.setWindowTitle("framelabel")
         self.resize(1600, 950)
         self.build_ui()
@@ -172,12 +183,16 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(260)
         self.progress.setVisible(False)
+        self.load_progress = QProgressBar()
+        self.load_progress.setMaximumWidth(200)
+        self.load_progress.setVisible(False)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setVisible(False)
         self.cancel_btn.clicked.connect(self.cancel_job)
         sb = self.statusBar()
         sb.addWidget(self.status_label, 1)
         sb.addPermanentWidget(self.pos_label)
+        sb.addPermanentWidget(self.load_progress)
         sb.addPermanentWidget(self.progress)
         sb.addPermanentWidget(self.cancel_btn)
 
@@ -322,6 +337,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Cannot open", f"{target}\n\n{e}")
             return
         self.commit_current()
+        self.cancel_loader()
         self.project = proj
         self.sessions = proj.sessions()
         if proj.path:
@@ -365,15 +381,69 @@ class MainWindow(QMainWindow):
             return
         self.commit_current()
         s = self.sessions[i]
-        self.status_label.setText(f"Opening {s.name}...")
-        QApplication.processEvents()
-        self.ws = Workspace(self.project, s, self.conf_spin.value())
         self.settings.setValue(f"session/{self.project.path or s.root}", s.name)
-        if not s.auto_dir.exists():
+        self.start_loading(s)
+
+    def start_loading(self, s: Session) -> None:
+        """Build the session's workspace (index, interface-screen scores) in a background thread."""
+        self.cancel_loader()
+        self.ws, self.queue, self.cur_path = None, [], None  # handlers return early while there is no workspace
+        self.frame_list.clear()
+        self.grid.message = f"Loading {s.name}..."
+        self.grid.set_items([], 0)
+        self.canvas.img = None
+        self.canvas.message = f"Loading {s.name}..."
+        self.canvas.update()
+        self.status_label.setText(f"Loading {s.name}...")
+        self.counts_label.setText("")
+        self.load_progress.setRange(0, 0)
+        self.load_progress.setVisible(True)
+        project, conf = self.project, self.conf_spin.value()
+        job = Job(lambda progress, cancelled: Workspace(project, s, conf, progress, cancelled))
+        self.loader = job
+        job.progress.connect(self.on_load_progress)
+        job.finished.connect(self.on_loaded)
+        job.failed.connect(self.on_load_failed)
+        start_job(self, job)
+
+    def cancel_loader(self) -> None:
+        if self.loader is not None:
+            self.loader.cancel()  # a late result is ignored: it no longer matches self.loader
+            self.loader = None
+            self.load_progress.setVisible(False)
+
+    @pyqtSlot(int, int, str)
+    def on_load_progress(self, i: int, n: int, msg: str) -> None:
+        if self.sender() is self.loader:
+            self.load_progress.setRange(0, max(n, 1))
+            self.load_progress.setValue(i)
+            self.status_label.setText(f"Loading: {msg} {i}/{n}")
+
+    @pyqtSlot(object)
+    def on_loaded(self, ws) -> None:
+        if self.sender() is not self.loader:
+            return  # a stale load: another session was chosen meanwhile
+        self.loader = None
+        self.load_progress.setVisible(False)
+        self.ws = ws
+        self.grid.message = ""
+        if not ws.session.auto_dir.exists():
             self.status_label.setText("No model proposals yet: Auto-label > Prelabel to get them. All frames go to the grid.")
-        triage = self.ws.queue("triage")
+        triage = ws.queue("triage")
         unreviewed_in_triage = any(f.status is None for f in triage)
         self.set_mode("grid" if unreviewed_in_triage else "edit", queue="triage" if unreviewed_in_triage else "edit")
+        self.session_loaded.emit()
+
+    @pyqtSlot(str)
+    def on_load_failed(self, msg: str) -> None:
+        if self.sender() is not self.loader:
+            return
+        self.loader = None
+        self.load_progress.setVisible(False)
+        self.grid.message = ""
+        self.canvas.message = f"Cannot open the session: {msg}"
+        self.canvas.update()
+        self.status_label.setText(self.canvas.message)
 
     # ================================================================ modes and queues
     def set_mode(self, mode: str, queue: str | None = None) -> None:
@@ -943,6 +1013,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e) -> None:
         self.commit_current()
+        self.cancel_loader()
+        stop_jobs(self)
         self.settings.setValue("geometry", self.saveGeometry())
         self.pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(e)
