@@ -185,3 +185,21 @@ def test_keys_during_loading_are_ignored(app, project):
     assert w.handle_key("Space") is False
     wait_until(app, lambda: w.loader is None and w.ws is not None)
     w.close()
+
+
+def test_reload_picks_up_new_proposals_and_keeps_the_frame(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.set_mode("edit", queue="all")
+    w.go(3)
+    assert w.cur_path.stem == "100003_000" and w.canvas.boxes == []
+    (s / "labels_auto" / "100003_000.txt").write_text("0 0.5 0.5 0.1 0.3 0.90")
+    w.reload_session()
+    wait_until(app, lambda: w.reloader is None)
+    assert w.cur_path.stem == "100003_000" and w.idx == 3
+    assert len(w.canvas.boxes) == 1 and w.canvas.boxes[0].conf == 0.9
+    w.close()

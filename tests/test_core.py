@@ -409,3 +409,16 @@ def test_ui_scores_cancel(tmp_path):
     with pytest.raises(Cancelled):
         ui_scores(s, s.frames(), HUD[0], cancelled=lambda: True)
     assert not (s.root / "ui_scores.json").exists()
+
+
+def test_apply_reload_keeps_statuses_and_takes_new_proposals(tmp_path):
+    s, stems = _index_session(tmp_path)
+    ws = Workspace(Project.from_dict({"name": "t", "classes": ["enemy", "corpse"], "sources": [str(tmp_path)]}, tmp_path), s)
+    fresh = ws.build_fresh()  # the snapshot is taken ...
+    ws.save(s.frames()[0], [], 64, 36, "skip")  # ... a decision follows, newer than the snapshot
+    s.auto_path(stems[0]).write_text("0 0.5 0.5 0.2 0.2 0.9")
+    ws.apply_reload(ws.build_fresh())
+    assert ws.index[0].status == "skip" and ws.index[0].confs == [0.9]
+    ws.apply_reload(fresh)  # an older snapshot must not undo the status either
+    assert ws.index[0].status == "skip" and ws.review.get(stems[0]) == "skip"
+    assert ws.index[3].status == "pos" and ws.index[3].label_cls == [1]  # labels survive

@@ -74,6 +74,7 @@ class MainWindow(QMainWindow):
         self.fitter = None
         self.job = None
         self.loader: Job | None = None  # the session being loaded in the background
+        self.reloader: Job | None = None  # proposals / new frames being re-read in the background
         self.setWindowTitle("framelabel")
         self.resize(1600, 950)
         self.build_ui()
@@ -387,6 +388,7 @@ class MainWindow(QMainWindow):
     def start_loading(self, s: Session) -> None:
         """Build the session's workspace (index, interface-screen scores) in a background thread."""
         self.cancel_loader()
+        self.reloader = None
         self.ws, self.queue, self.cur_path = None, [], None  # handlers return early while there is no workspace
         self.frame_list.clear()
         self.grid.message = f"Loading {s.name}..."
@@ -471,6 +473,11 @@ class MainWindow(QMainWindow):
         self.set_mode("edit" if self.mode == "grid" else "grid")
 
     def on_queue_changed(self, _i: int) -> None:
+        self.apply_queue()
+
+    def apply_queue(self, keep_stem: str | None = None) -> None:
+        """Rebuild the current queue and show it; with keep_stem stay on that frame (or its grid page) if it is
+        still in the queue."""
         if self.ws is None:
             return
         self.commit_current()
@@ -478,10 +485,18 @@ class MainWindow(QMainWindow):
         self.queue = self.ws.queue(name)
         with timed("fill_frame_list", 50):
             self.fill_frame_list()
+        pos = next((i for i, f in enumerate(self.queue) if f.stem == keep_stem), None) if keep_stem else None
         if self.mode == "grid":
-            first = next((i for i, f in enumerate(self.queue) if f.status is None), 0) if name == "triage" else 0
-            self.grid.set_items(self.queue, first // self.grid.per_page,
-                                initial_mark=lambda fi, v=name: self.ws.initial_mark(fi, v))
+            if pos is not None:
+                page = pos // self.grid.per_page
+            else:
+                page = next((i for i, f in enumerate(self.queue) if f.status is None), 0) // self.grid.per_page                     if name == "triage" else 0
+            marks = dict(self.grid.marks) if keep_stem else {}
+            self.grid.set_items(self.queue, page, initial_mark=lambda fi, v=name: self.ws.initial_mark(fi, v))
+            if marks:  # marks not committed yet survive the rebuild
+                on_page = {f.stem for f in self.grid.page_items()}
+                self.grid.marks.update({k: m for k, m in marks.items() if k in on_page})
+                self.grid.update()
             self.grid.setFocus()
         else:
             if not self.queue:
@@ -491,10 +506,47 @@ class MainWindow(QMainWindow):
                 self.canvas.update()
                 self.update_status()
                 return
-            first = next((i for i, f in enumerate(self.queue) if f.status in (None, "todo")), 0)
+            first = pos if pos is not None else                 next((i for i, f in enumerate(self.queue) if f.status in (None, "todo")), 0)
             self.load_frame(first)
             self.canvas.setFocus()
         self.update_status()
+
+    # ---- re-reading proposals and new frames without leaving the frame
+    def reload_session(self) -> None:
+        if self.ws is None or self.loader is not None:
+            return
+        if self.reloader is not None:
+            self.reloader.cancel()
+        ws = self.ws
+        job = Job(lambda progress, cancelled: ws.build_fresh(progress, cancelled))
+        job.ws = ws
+        self.reloader = job
+        self.status_label.setText("Re-reading proposals...")
+        job.finished.connect(self.on_reloaded)
+        job.failed.connect(self.on_reload_failed)
+        start_job(self, job)
+
+    @pyqtSlot(object)
+    def on_reloaded(self, fresh) -> None:
+        job = self.sender()
+        if job is not self.reloader or self.ws is not job.ws:
+            return  # another reload or another session replaced this one
+        self.reloader = None
+        stem = None
+        if self.mode == "edit" and self.cur_path is not None:
+            stem = self.cur_path.stem
+        elif self.mode == "grid" and self.grid.items:
+            stem = self.grid.page_items()[0].stem
+        self.commit_current()
+        self.ws.apply_reload(fresh)
+        self.apply_queue(keep_stem=stem)
+        self.status_label.setText("Proposals reloaded.")
+
+    @pyqtSlot(str)
+    def on_reload_failed(self, msg: str) -> None:
+        if self.sender() is self.reloader:
+            self.reloader = None
+            self.status_label.setText(f"Reload failed: {msg}")
 
     def fill_frame_list(self) -> None:
         self.frame_list.blockSignals(True)
@@ -930,9 +982,7 @@ class MainWindow(QMainWindow):
     def after_prelabel(self, stats: dict) -> None:
         QMessageBox.information(self, "Prelabel", f"{stats['done']} of {stats['frames']} frames, "
                                 f"{stats['with_proposals']} with proposals, {stats['seconds']:.0f} s")
-        if self.ws is not None:
-            self.ws.reload()
-            self.set_mode(self.mode, self.queue_box.currentData())
+        self.reload_session()
 
     def run_job(self, job: Job, title: str, done) -> None:
         if self.job is not None:
@@ -1014,6 +1064,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e) -> None:
         self.commit_current()
         self.cancel_loader()
+        self.reloader = None
         stop_jobs(self)
         self.settings.setValue("geometry", self.saveGeometry())
         self.pool.shutdown(wait=False, cancel_futures=True)

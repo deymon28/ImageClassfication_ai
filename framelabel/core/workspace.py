@@ -32,6 +32,27 @@ class Workspace:
         self.index = build_index(self.session, self.review, self.project.ignore_zones, self.ui, progress, cancelled)
         self.by_stem = {fi.stem: i for i, fi in enumerate(self.index)}
 
+    def build_fresh(self, progress=None, cancelled=None) -> tuple[dict[str, float], list[FrameInfo]]:
+        """(interface scores, index) read from disk without touching this workspace: safe to run in a thread, then
+        hand the result to apply_reload on the GUI thread."""
+        review = self.session.review(self.project.class_names)
+        ui = ui_scores(self.session, self.session.frames(), self.project.ui_zone, progress, cancelled)             if self.project.ui_zone else {}
+        return ui, build_index(self.session, review, self.project.ignore_zones, ui, progress, cancelled)
+
+    def apply_reload(self, fresh: tuple[dict[str, float], list[FrameInfo]]) -> None:
+        """Take new proposals (and new frames) from build_fresh, but keep this workspace's statuses and labels:
+        decisions made while the index was being rebuilt are newer than the snapshot."""
+        ui, frames = fresh
+        old = {fi.stem: fi for fi in self.index}
+        for fi in frames:
+            o = old.get(fi.stem)
+            fi.status = o.status if o is not None else self.review.get(fi.stem)
+            if o is not None:
+                fi.label_cls, fi.label_h, fi.label_xyxy = o.label_cls, o.label_h, o.label_xyxy
+        self.ui = ui
+        self.index = frames
+        self.by_stem = {fi.stem: i for i, fi in enumerate(self.index)}
+
     def queue(self, name: str, **kw) -> list[FrameInfo]:
         return build_queue(self.index, name, conf=self.conf, ui_threshold=self.project.ui_threshold, **kw)
 
