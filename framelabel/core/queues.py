@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from .boxes import iou_matrix, parse_rows, in_zones
+from .index_cache import read_rows_cached
 from .session import Review, Session
 
 QUEUES = ("edit", "triage", "uncertain", "small", "disagree", "all", "unreviewed", "todo", "pos", "neg", "skip", "ui")
@@ -50,27 +51,42 @@ def _xyxy(rows) -> np.ndarray:
     return a.reshape(-1, 4)
 
 
-def frame_info(session: Session, path: Path, review: Review, ignore_zones=(), ui: float = 1.0) -> FrameInfo:
-    fi = FrameInfo(path, review.get(path.stem), ui=ui)
-    auto = session.auto_path(path.stem)
-    if auto.exists():
-        rows = [r for r in parse_rows(auto.read_text(encoding="utf-8"))
-                if r[5] is not None and not in_zones(r[1], r[2], ignore_zones)]
+def frame_info_from_rows(path: Path, status: str | None, auto_rows, label_rows, ignore_zones=(),
+                         ui: float = 1.0) -> FrameInfo:
+    """FrameInfo from already parsed rows; None rows mean the file does not exist."""
+    fi = FrameInfo(path, status, ui=ui)
+    if auto_rows is not None:
+        rows = [r for r in auto_rows if r[5] is not None and not in_zones(r[1], r[2], ignore_zones)]
         fi.confs = [r[5] for r in rows]
         fi.prop_h = [r[4] for r in rows]
         fi.prop_xyxy = _xyxy(rows)
-    lab = session.label_path(path.stem)
-    if fi.status in ("pos", "neg") and lab.exists():
-        rows = parse_rows(lab.read_text(encoding="utf-8"))
-        fi.label_cls = [r[0] for r in rows]
-        fi.label_h = [r[4] for r in rows]
-        fi.label_xyxy = _xyxy(rows)
+    if status in ("pos", "neg") and label_rows is not None:
+        fi.label_cls = [r[0] for r in label_rows]
+        fi.label_h = [r[4] for r in label_rows]
+        fi.label_xyxy = _xyxy(label_rows)
     return fi
 
 
-def build_index(session: Session, review: Review, ignore_zones=(), ui: dict[str, float] | None = None) -> list[FrameInfo]:
+def frame_info(session: Session, path: Path, review: Review, ignore_zones=(), ui: float = 1.0) -> FrameInfo:
+    """One frame's summary read straight from its files (used after a save; the whole session uses build_index)."""
+    auto, lab = session.auto_path(path.stem), session.label_path(path.stem)
+    auto_rows = parse_rows(auto.read_text(encoding="utf-8")) if auto.exists() else None
+    status = review.get(path.stem)
+    label_rows = parse_rows(lab.read_text(encoding="utf-8")) if status in ("pos", "neg") and lab.exists() else None
+    return frame_info_from_rows(path, status, auto_rows, label_rows, ignore_zones, ui)
+
+
+def build_index(session: Session, review: Review, ignore_zones=(), ui: dict[str, float] | None = None,
+                progress=None, cancelled=None) -> list[FrameInfo]:
+    """Summaries of every frame; label files are read through a persistent cache and only when they changed.
+    `progress(i, n, msg)` and `cancelled()` are optional; cancelling raises index_cache.Cancelled."""
+    frames = session.frames()
+    auto = read_rows_cached(session.auto_dir, None, progress, cancelled)
+    wanted = {p.stem for p in frames if review.get(p.stem) in ("pos", "neg")}
+    labels = read_rows_cached(session.labels_dir, wanted, progress, cancelled)
     ui = ui or {}
-    return [frame_info(session, p, review, ignore_zones, ui.get(p.stem, 1.0)) for p in session.frames()]
+    return [frame_info_from_rows(p, review.get(p.stem), auto.get(p.stem), labels.get(p.stem), ignore_zones,
+                                 ui.get(p.stem, 1.0)) for p in frames]
 
 
 def uncertainty(confs: list[float], low: float, high: float) -> float:

@@ -303,3 +303,81 @@ def test_build_index_reads_every_frame(tmp_path):
     s = _project(tmp_path).sessions()[0]
     idx = build_index(s, s.review())
     assert len(idx) == 3 and build_queue(idx, "all") == idx and build_queue(idx, "class:0") == []
+
+
+# ---------------------------------------------------------------- index cache
+def _index_session(tmp_path):
+    from framelabel.core.boxes import write_yolo
+
+    s = tmp_path / "session_20261008_100000"
+    (s / "frames").mkdir(parents=True)
+    (s / "labels").mkdir()
+    (s / "labels_auto").mkdir()
+    stems = [f"10{i:04d}_000" for i in range(7)]
+    for st in stems:
+        cv2.imwrite(str(s / "frames" / f"{st}.jpg"), np.zeros((36, 64, 3), np.uint8))
+    auto = {1: "", 2: "0 0.5 0.5 0.1 0.3 0.80\n0 0.03 0.8 0.02 0.05 0.60",  # second row is inside the HUD zone
+            3: "1 0.4 0.4 0.2 0.2 0.20", 4: "0 0.5 0.5 0.1 0.2 0.40", 5: "0 0.2 0.2 0.1 0.1 0.9"}
+    for i, txt in auto.items():
+        (s / "labels_auto" / f"{stems[i]}.txt").write_text(txt)
+    (s / "labels_auto" / f"{stems[6]}.txt").write_text("0 0.1 0.1 0.2 0.2 0.5 0.1 0.1\n")  # malformed: ignored
+    review = Review(s / "review.json", ["enemy", "corpse"])
+    review.set_many({stems[3]: "pos", stems[4]: "neg", stems[5]: "todo"})
+    write_yolo(s / "labels" / f"{stems[3]}.txt", [Box(10, 5, 30, 25, 1)], 64, 36)
+    (s / "labels" / f"{stems[4]}.txt").write_text("")
+    write_yolo(s / "labels" / f"{stems[5]}.txt", [Box(10, 5, 30, 25, 0)], 64, 36)  # todo: labels are ignored
+    return Session.open(s), stems
+
+
+def _same_info(a, b):
+    assert a.path == b.path and a.status == b.status and a.confs == b.confs and a.prop_h == b.prop_h
+    assert a.label_cls == b.label_cls and a.label_h == b.label_h and a.ui == b.ui
+    for x, y in ((a.prop_xyxy, b.prop_xyxy), (a.label_xyxy, b.label_xyxy)):
+        assert (x is None) == (y is None) and (x is None or np.array_equal(x, y))
+
+
+def test_cached_index_equals_direct_read(tmp_path):
+    from framelabel.core.queues import frame_info
+
+    s, _ = _index_session(tmp_path)
+    review = s.review()
+    direct = [frame_info(s, p, review, HUD) for p in s.frames()]
+    for _ in range(2):  # the second run comes from the cache
+        for got, want in zip(build_index(s, review, HUD), direct):
+            _same_info(got, want)
+
+
+def test_index_cache_sees_changes(tmp_path):
+    import os
+
+    s, stems = _index_session(tmp_path)
+    review = s.review()
+    build_index(s, review)
+    f = s.auto_path(stems[3])
+    f.write_text("0 0.5 0.5 0.1 0.2 0.95")
+    t = f.stat().st_mtime_ns + 2_000_000_000
+    os.utime(f, ns=(t, t))
+    s.auto_path(stems[5]).unlink()
+    s.auto_path(stems[0]).write_text("0 0.3 0.3 0.1 0.1 0.7")
+    idx = {fi.stem: fi for fi in build_index(s, review)}
+    assert idx[stems[3]].confs == [0.95] and idx[stems[5]].prop_xyxy is None and idx[stems[0]].confs == [0.7]
+
+
+def test_index_cache_survives_corrupt_cache(tmp_path):
+    from framelabel.core.index_cache import cache_dir
+
+    s, stems = _index_session(tmp_path)
+    build_index(s, s.review())
+    for f in cache_dir().glob("rows_*.json"):
+        f.write_text("{not json")
+    assert [fi.confs for fi in build_index(s, s.review())][2] == [0.8, 0.6]
+
+
+def test_build_index_cancel(tmp_path):
+    from framelabel.core.index_cache import Cancelled
+
+    s, _ = _index_session(tmp_path)
+    for i in range(250):
+        s.auto_path(f"extra{i}").write_text("0 0.5 0.5 0.1 0.1 0.5")
+    with pytest.raises(Cancelled):
+        build_index(s, s.review(), cancelled=lambda: True)
