@@ -12,7 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
-from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QObject, QSettings, QSortFilterProxyModel, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
                              QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow,
@@ -134,16 +134,23 @@ class MainWindow(QMainWindow):
         self.mode_btn = QPushButton("Grid / Editor  (Tab)")
         self.mode_btn.clicked.connect(self.switch_mode)
         self.frame_model = FrameListModel(self)
+        self.frame_proxy = QSortFilterProxyModel(self)  # the filter box above the list
+        self.frame_proxy.setSourceModel(self.frame_model)
+        self.frame_proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.frame_filter = QLineEdit()
+        self.frame_filter.setPlaceholderText("Filter frames (e.g. 1024, new, empty)")
+        self.frame_filter.setClearButtonEnabled(True)
+        self.frame_filter.textChanged.connect(self.frame_proxy.setFilterFixedString)
         self.frame_list = QListView()
-        self.frame_list.setModel(self.frame_model)
+        self.frame_list.setModel(self.frame_proxy)
         self.frame_list.setUniformItemSizes(True)
         self.frame_list.setEditTriggers(QListView.EditTrigger.NoEditTriggers)
         self.frame_list.activated.connect(self.on_frame_clicked)
         self.frame_list.clicked.connect(self.on_frame_clicked)
         self.counts_label = QLabel()
         self.counts_label.setWordWrap(True)
-        for w in (QLabel("Session"), self.session_box, QLabel("Queue"), self.queue_box, self.mode_btn, self.frame_list,
-                  self.counts_label):
+        for w in (QLabel("Session"), self.session_box, QLabel("Queue"), self.queue_box, self.mode_btn, self.frame_filter,
+                  self.frame_list, self.counts_label):
             lv.addWidget(w)
         dock = QDockWidget("Frames", self)
         dock.setObjectName("frames")
@@ -617,12 +624,13 @@ class MainWindow(QMainWindow):
     def select_frame_row(self, row: int) -> None:
         """Highlight a row of the frame list without triggering anything."""
         if 0 <= row < self.frame_model.rowCount():
-            ix = self.frame_model.index(row)
-            self.frame_list.setCurrentIndex(ix)
-            self.frame_list.scrollTo(ix)
+            ix = self.frame_proxy.mapFromSource(self.frame_model.index(row))
+            if ix.isValid():  # the frame may be hidden by the filter
+                self.frame_list.setCurrentIndex(ix)
+                self.frame_list.scrollTo(ix)
 
     def on_frame_clicked(self, index) -> None:
-        row = index.row()
+        row = self.frame_proxy.mapToSource(index).row()  # the list may be filtered
         if self.mode == "grid":
             self.grid.set_page(row // self.grid.per_page)
         else:

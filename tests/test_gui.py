@@ -514,3 +514,23 @@ def test_resume_goto_and_reload_keys(app, project, monkeypatch):
     wait_until(app, lambda: w2.reloader is None)
     assert w2.cur_path.stem == "100006_000" and w2.canvas.boxes[0].conf == 0.4
     w2.close()
+
+
+def test_frame_list_filter_maps_rows_back_to_the_queue(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, _ = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.set_mode("edit", queue="all")
+    w.frame_filter.setText("100005")
+    assert w.frame_proxy.rowCount() == 1 and w.frame_model.rowCount() == 8
+    w.on_frame_clicked(w.frame_proxy.index(0, 0))
+    assert w.cur_path.stem == "100005_000"  # the proxy row 0 is queue row 5
+    assert w.frame_list.currentIndex().row() == 0
+    w.go(1)  # a frame hidden by the filter: nothing to highlight, no error
+    assert w.cur_path.stem == "100001_000"
+    w.frame_filter.setText("")
+    assert w.frame_proxy.rowCount() == 8
+    w.close()
