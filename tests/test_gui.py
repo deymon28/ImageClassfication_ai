@@ -366,3 +366,33 @@ def test_frame_list_model_follows_the_queue(app, project):
     assert "[empty]" in m.data(m.index(2)) and m.data(m.index(2), Qt.ItemDataRole.ForegroundRole).name() == "#8a8a8a"
     assert w.frame_list.currentIndex().row() == 3  # the editor moved on
     w.close()
+
+
+def test_to_qimage_keeps_colours():
+    from framelabel.gui.canvas import to_qimage
+
+    img = np.zeros((1, 2, 3), np.uint8)
+    img[0, 0] = (255, 0, 0)  # BGR blue
+    img[0, 1] = (0, 0, 255)  # BGR red
+    q = to_qimage(img)
+    assert q.pixelColor(0, 0).getRgb()[:3] == (0, 0, 255) and q.pixelColor(1, 0).getRgb()[:3] == (255, 0, 0)
+    g = to_qimage(np.full((2, 2), 90, np.uint8))
+    assert g.pixelColor(1, 1).getRgb()[:3] == (90, 90, 90)
+
+
+def test_editor_prefetches_around_the_current_frame(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.set_mode("edit", queue="all")
+    stems = lambda: sorted(p.stem for p in w.prefetch)  # noqa: E731
+    assert w.idx == 0 and stems() == ["100001_000", "100002_000"]
+    w.go(3)
+    assert stems() == ["100002_000", "100004_000", "100005_000"]  # behind (kept), and two ahead
+    w.go(2)
+    img, qimg = w.canvas.img, w.canvas.qimg
+    assert img.shape[:2] == (180, 320) and qimg.width() == 320 and w.cur_path.stem == "100002_000"
+    w.close()

@@ -25,7 +25,7 @@ from framelabel.core.queues import FrameInfo
 from framelabel.core.session import Session
 from framelabel.core.workspace import Workspace
 from framelabel.perf import setup_logging, timed
-from .canvas import Canvas
+from .canvas import Canvas, to_qimage
 from .frame_list import FrameListModel
 from .grid import Grid
 from .keys import Keymap, key_name
@@ -40,6 +40,12 @@ EDIT_QUEUES = [("edit", "To review (proposals / marked)"), ("uncertain", "Uncert
                ("skip", "Skipped"), ("all", "All frames")]
 GRID_QUEUES = [("triage", "Model found nothing"), ("ui", "Suspected interface screens"), ("neg", "Saved as empty"),
                ("skip", "Skipped"), ("unreviewed", "Not reviewed"), ("all", "All frames")]
+
+
+def read_frame(path: Path):
+    """(image, QImage) or (None, None); runs in the prefetch threads (QImage, unlike QPixmap, is safe there)."""
+    img = cv2.imread(str(path))
+    return (img, to_qimage(img)) if img is not None else (None, None)
 
 
 def color_icon(color: str, size: int = 12) -> QIcon:
@@ -190,6 +196,8 @@ class MainWindow(QMainWindow):
 
         self.status_label = QLabel()
         self.pos_label = QLabel()
+        # a fixed width: the text changes on every mouse move and would re-layout the status bar each time
+        self.pos_label.setMinimumWidth(self.pos_label.fontMetrics().horizontalAdvance("new box 99999 x 99999 px") + 8)
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(260)
         self.progress.setVisible(False)
@@ -580,15 +588,17 @@ class MainWindow(QMainWindow):
 
     # ================================================================ editor frames
     def read_image(self, path: Path):
+        """(image, QImage) of a frame: from the read-ahead if it was prefetched, else read now. Keeps the next two
+        frames and the previous one prefetching (the worker also converts to QImage); drops the rest."""
         f = self.prefetch.pop(path, None)
-        img = f.result() if f is not None else cv2.imread(str(path))
-        for q in self.queue[self.idx + 1:self.idx + 3]:  # read ahead
-            if q.path not in self.prefetch:
-                self.prefetch[q.path] = self.pool.submit(cv2.imread, str(q.path))
-        for k in list(self.prefetch):
-            if len(self.prefetch) > 6:
-                del self.prefetch[k]
-        return img
+        img, qimg = f.result() if f is not None else read_frame(path)
+        wanted = [self.queue[i].path for i in (self.idx + 1, self.idx + 2, self.idx - 1) if 0 <= i < len(self.queue)]
+        for p in [p for p in self.prefetch if p not in wanted]:
+            self.prefetch.pop(p).cancel()
+        for p in wanted:
+            if p not in self.prefetch and p != path:
+                self.prefetch[p] = self.pool.submit(read_frame, p)
+        return img, qimg
 
     def load_frame(self, idx: int, carried: list[Box] | None = None) -> None:
         with timed("load_frame", 50):
@@ -597,7 +607,7 @@ class MainWindow(QMainWindow):
     def _load_frame(self, idx: int, carried: list[Box] | None = None) -> None:
         self.idx = min(max(idx, 0), len(self.queue) - 1)
         fi = self.queue[self.idx]
-        img = self.read_image(fi.path)
+        img, qimg = self.read_image(fi.path)
         if img is None:
             self.canvas.message = f"Cannot read {fi.path}"
             self.canvas.img = None
@@ -607,7 +617,7 @@ class MainWindow(QMainWindow):
         boxes, weak = self.ws.load_boxes(fi.path, w, h)
         self.cur_path = fi.path
         self.canvas.message = ""
-        self.canvas.set_frame(img, boxes, weak, keep_view=True)
+        self.canvas.set_frame(img, boxes, weak, keep_view=True, qimg=qimg)
         if carried is not None and not boxes and fi.status in (None, "todo"):
             self.canvas.replace_boxes(carried)
             self.canvas.message = "boxes carried over from the previous frame: check them"
@@ -640,9 +650,11 @@ class MainWindow(QMainWindow):
         if carry and self.carry_check.isChecked() and prev_img is not None and prev_boxes and 0 <= idx < len(self.queue):
             nxt = self.queue[idx]
             if nxt.status in (None, "todo") and nxt.max_conf < self.conf_spin.value():
-                img = self.read_image(nxt.path)
+                img, qimg = self.read_image(nxt.path)
                 if img is not None and img.shape[:2] == prev_img.shape[:2]:
-                    self.prefetch[nxt.path] = self.pool.submit(lambda im=img: im)
+                    done = Future()
+                    done.set_result((img, qimg))
+                    self.prefetch[nxt.path] = done  # load_frame takes it right away
                     carried = propagate(prev_img, img, prev_boxes, [])
         self.load_frame(idx, carried)
 

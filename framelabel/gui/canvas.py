@@ -31,9 +31,11 @@ def loupe_window(ix: float, iy: float, view_scale: float, side: float, zoom: flo
 
 
 def to_qimage(img: np.ndarray) -> QImage:
-    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    h, w = rgb.shape[:2]
-    return QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+    """BGR (or gray) array -> QImage in a 32-bit format, which Qt paints without converting on every repaint
+    (BGRA memory order is Format_RGB32 on little-endian machines)."""
+    bgra = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA if img.ndim == 2 else cv2.COLOR_BGR2BGRA)
+    h, w = bgra.shape[:2]
+    return QImage(bgra.data, w, h, 4 * w, QImage.Format.Format_RGB32).copy()
 
 
 class Canvas(QWidget):
@@ -77,10 +79,11 @@ class Canvas(QWidget):
         self.cls = min(self.cls, len(names) - 1)
         self.update()
 
-    def set_frame(self, img: np.ndarray, boxes: list[Box], weak: list[Box] | None = None, keep_view: bool = False) -> None:
+    def set_frame(self, img: np.ndarray, boxes: list[Box], weak: list[Box] | None = None, keep_view: bool = False,
+                  qimg: QImage | None = None) -> None:
         # `img` is replaced, never modified in place: the SAM thread may still be reading the previous array
         same_size = self.img is not None and self.img.shape[:2] == img.shape[:2]
-        self.img, self.qimg, self._small = img, to_qimage(img), None
+        self.img, self.qimg, self._small = img, qimg if qimg is not None else to_qimage(img), None
         if not (keep_view and same_size):
             self.view = View(img.shape[1], img.shape[0])
         self.view.fit(self.width(), self.height())
