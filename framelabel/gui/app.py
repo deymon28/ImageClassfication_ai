@@ -328,6 +328,10 @@ class MainWindow(QMainWindow):
         self.grid.class_colors = [QColor(c.color) for c in proj.classes]
         self.grid.ui_threshold = proj.ui_threshold
         self.fill_classes()
+        if "show_conf" in proj.prelabel:  # the project's recommended threshold for its labeler
+            self.conf_spin.blockSignals(True)
+            self.conf_spin.setValue(float(proj.prelabel["show_conf"]))
+            self.conf_spin.blockSignals(False)
         self.session_box.blockSignals(True)
         self.session_box.clear()
         for s in self.sessions:

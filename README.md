@@ -97,21 +97,26 @@ triggers the same actions).
 
 ## Labeler model for Arena Breakout Infinite
 
-The default prelabeler `train_runs/abi_own_y26x` is a YOLO26x trained in two stages
-(`python -m framelabel train --preset abi-person`, then `--preset abi-own`):
+The default prelabeler for the ABI project is an ensemble of `train_runs/abi_own_coco_y26x` (YOLO26x from COCO
+weights fine-tuned on the own labeled frames) and screendet's `coco_y26m_own`, with test-time augmentation. Measured
+against screendet's previous prelabeler `enemy_y26s` on the own val split it has about 3x fewer false positives per
+frame (7x fewer on empty frames), twice the recall on 20-50 px people and corpse proposals; numbers and the
+alternatives that were tried are in `docs/labeler-model.md`. Training (`python -m framelabel train`):
 
-1. one class `person` at 640 px on public Arena Breakout Infinite sets plus the train split of the own labeled frames
-   (`tools/build_labeler_data.py`). The public sets were inspected visually; sets from other games (Escape from
-   Tarkov, Arma 3, Modern Warfare II, Arena Breakout mobile, mixed "humanoid" sets) are excluded - the list and
-   reasons are in `tools/abi_sources.yaml`. Public labels mark corpses as enemies, so they only teach "a human body".
-2. two classes `enemy`/`corpse` at 1280 px on the own frames (`tools/split_own_dev.py`: the own train split cut into
-   train and a dev split for picking the epoch), so the own val split stays unseen until the final comparison.
+* `--preset abi-own --model models/yolo26x.pt --name abi_own_coco_y26x` - the model above. Data:
+  `tools/split_own_dev.py` cuts the own train split into train and a dev split for picking the epoch, so the own
+  val split stays unseen until the final comparison.
+* `--preset abi-person`, then `--preset abi-own` - a variant that first learns one class `person` at 640 px from
+  public Arena Breakout Infinite sets (`tools/build_labeler_data.py`). The public sets were inspected visually;
+  sets from other games (Escape from Tarkov, Arma 3, Modern Warfare II, Arena Breakout mobile, mixed "humanoid"
+  sets) are excluded - the list and reasons are in `tools/abi_sources.yaml`. Public labels mark corpses as enemies,
+  which made this variant worse on corpses.
 
-Compare labelers on the own val split (`docs/labeler-model.md` has the measured results):
+Compare labelers on the own val split, and on empty frames (`tools/build_neg_eval.py`):
 
 ```
 python -m framelabel eval --data ..\fin_snip_helper\datasets\own\data.yaml --project projects\abi.yaml ^
-    --setup old=..\fin_snip_helper\train_runs\enemy_y26s\weights\best.pt new=train_runs\abi_own_y26x\weights\best.pt
+    --setup old=..\fin_snip_helper\train_runs\enemy_y26s\weights\best.pt new=train_runs\abi_own_coco_y26x\weights\best.pt
 ```
 
 It reports AP50 and, per confidence, precision, recall, false positives per frame and recall by box height

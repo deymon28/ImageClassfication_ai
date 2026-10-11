@@ -8,3 +8,4 @@ datasets/
 runs/
 projects/
 *.log
+weights/

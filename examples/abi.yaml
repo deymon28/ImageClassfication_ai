@@ -16,8 +16,9 @@ model_dirs:
   - ../models
   - ../train_runs
   - ../../fin_snip_helper/train_runs
-default_models:
-  - ../train_runs/abi_own_y26x/weights/best.pt
+default_models:  # ensemble chosen in docs/labeler-model.md
+  - ../train_runs/abi_own_coco_y26x/weights/best.pt
+  - ../../fin_snip_helper/train_runs/coco_y26m_own/weights/best.pt
 class_map:
   person: enemy
 export:
@@ -28,3 +29,5 @@ export:
 prelabel:
   imgsz: 1280
   conf: 0.05
+  tta: true
+  show_conf: 0.2   # proposals shown as boxes from this confidence (the ensemble has few false positives)
