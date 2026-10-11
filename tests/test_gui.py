@@ -203,3 +203,70 @@ def test_reload_picks_up_new_proposals_and_keeps_the_frame(app, project):
     assert w.cur_path.stem == "100003_000" and w.idx == 3
     assert len(w.canvas.boxes) == 1 and w.canvas.boxes[0].conf == 0.9
     w.close()
+
+
+class FakeFitter:
+    delay = 0.0
+
+    def __init__(self, weights):
+        pass
+
+    def load(self):
+        pass
+
+    def fit(self, img, box=None, point=None):
+        from framelabel.core.boxes import Box
+
+        time.sleep(FakeFitter.delay)
+        return Box(10, 10, 50, 90, 0)
+
+
+@pytest.fixture
+def fake_sam(monkeypatch, tmp_path):
+    import framelabel.ml.guard as guard
+    import framelabel.ml.models as models
+    import framelabel.ml.sam as sam
+
+    monkeypatch.setattr(guard, "check_gpu_allowed", lambda *a, **k: None)
+    monkeypatch.setattr(models, "find_sam", lambda dirs: tmp_path / "sam_fake.pt")
+    monkeypatch.setattr(sam, "BoxFitter", FakeFitter)
+    FakeFitter.delay = 0.0
+    yield FakeFitter
+    FakeFitter.delay = 0.0
+
+
+def editor_with_box(app, project):
+    from framelabel.core.boxes import Box
+    from framelabel.gui.app import MainWindow
+
+    path, _ = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.set_mode("edit", queue="all")
+    w.canvas.resize(640, 360)
+    w.canvas.add_box(Box(100, 100, 200, 160, 1))
+    return w
+
+
+def test_sam_worker_result_applies_to_the_same_box(app, project, fake_sam):
+    w = editor_with_box(app, project)
+    w.sam_fit(w.canvas.boxes[0], index=0)
+    wait_until(app, lambda: not w.sam_pending)
+    b = w.canvas.boxes[0]
+    assert (b.x1, b.y1, b.x2, b.y2) == (10, 10, 50, 90) and b.cls == 1  # geometry from SAM, class of the old box
+    assert w.canvas.history.can_undo
+    w.close()
+
+
+def test_sam_click_adds_a_box_and_a_dropped_result_changes_nothing(app, project, fake_sam):
+    w = editor_with_box(app, project)
+    w.sam_fit((120.0, 130.0))
+    wait_until(app, lambda: not w.sam_pending)
+    assert len(w.canvas.boxes) == 2
+    fake_sam.delay = 0.3
+    w.sam_fit(w.canvas.boxes[0], index=0)
+    w.go(w.idx + 1)  # the frame changes before SAM answers
+    wait_until(app, lambda: not w.sam_pending)
+    assert w.canvas.boxes == [] and "dropped" in w.status_label.text()
+    w.close()

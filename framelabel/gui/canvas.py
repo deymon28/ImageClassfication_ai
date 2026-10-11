@@ -78,6 +78,7 @@ class Canvas(QWidget):
         self.update()
 
     def set_frame(self, img: np.ndarray, boxes: list[Box], weak: list[Box] | None = None, keep_view: bool = False) -> None:
+        # `img` is replaced, never modified in place: the SAM thread may still be reading the previous array
         same_size = self.img is not None and self.img.shape[:2] == img.shape[:2]
         self.img, self.qimg, self._small = img, to_qimage(img), None
         if not (keep_view and same_size):

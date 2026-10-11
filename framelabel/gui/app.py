@@ -11,7 +11,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
-from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
                              QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
@@ -57,6 +57,7 @@ def make_settings() -> QSettings:
 
 class MainWindow(QMainWindow):
     session_loaded = pyqtSignal()  # a session's workspace was applied (also used by tests)
+    sam_request = pyqtSignal(int, object, object, object)  # request id, image, rough Box, click point
 
     def __init__(self, target: Path | None = None):
         super().__init__()
@@ -71,7 +72,11 @@ class MainWindow(QMainWindow):
         self.cur_path: Path | None = None
         self.prefetch: dict[Path, Future] = {}
         self.pool = ThreadPoolExecutor(2)
-        self.fitter = None
+        self.sam_thread: QThread | None = None
+        self.sam_worker = None
+        self.sam_weights: Path | None = None
+        self.sam_seq = 0
+        self.sam_pending: dict[int, dict] = {}
         self.job = None
         self.loader: Job | None = None  # the session being loaded in the background
         self.reloader: Job | None = None  # proposals / new frames being re-read in the background
@@ -339,6 +344,7 @@ class MainWindow(QMainWindow):
             return
         self.commit_current()
         self.cancel_loader()
+        self.shutdown_sam()  # the model folders may differ
         self.project = proj
         self.sessions = proj.sessions()
         if proj.path:
@@ -885,46 +891,87 @@ class MainWindow(QMainWindow):
         del stems
 
     # ================================================================ SAM
-    def sam_fit(self, prompt, index: int | None = None) -> None:
-        from framelabel.ml.guard import GuardError, check_gpu_allowed
+    def ensure_sam(self) -> bool:
+        """Start the SAM thread (once per weights file); False when there are no SAM weights."""
         from framelabel.ml.models import find_sam
-        from framelabel.ml.sam import BoxFitter
 
+        from .sam_worker import SamWorker
+
+        weights = find_sam(self.model_dirs())
+        if weights is None:
+            QMessageBox.information(self, "SAM", "No SAM weights (e.g. sam2.1_b.pt) found in the model folders.")
+            return False
+        if self.sam_thread is not None and weights == self.sam_weights:
+            return True
+        self.shutdown_sam()
+        self.sam_weights = weights
+        self.sam_thread = QThread(self)
+        self.sam_worker = SamWorker(weights, self.project.game_processes or ["UAGame.exe"])
+        self.sam_worker.moveToThread(self.sam_thread)
+        self.sam_thread.finished.connect(self.sam_worker.deleteLater)
+        self.sam_request.connect(self.sam_worker.fit)
+        self.sam_worker.ready.connect(self.on_sam_ready)
+        self.sam_worker.failed.connect(self.on_sam_failed)
+        self.sam_worker.status.connect(self.status_label.setText)
+        self.sam_thread.start()
+        return True
+
+    def shutdown_sam(self) -> None:
+        if self.sam_thread is not None:
+            self.sam_thread.quit()
+            if not self.sam_thread.wait(10000):
+                log.warning("the SAM thread did not stop")
+            self.sam_thread.deleteLater()
+        self.sam_thread = self.sam_worker = self.sam_weights = None
+        self.sam_pending.clear()
+
+    def sam_fit(self, prompt, index: int | None = None) -> None:
+        """Ask the SAM thread to fit a rough Box (the selected / just drawn box) or a click point (x, y)."""
         c = self.canvas
-        if c.img is None:
+        if c.img is None or not self.ensure_sam():
             return
-        try:
-            check_gpu_allowed(self.project.game_processes or ["UAGame.exe"])
-        except GuardError as e:
-            self.status_label.setText(str(e))
-            return
-        if self.fitter is None:
-            weights = find_sam(self.model_dirs())
-            if weights is None:
-                QMessageBox.information(self, "SAM", "No SAM weights (e.g. sam2.1_b.pt) found in the model folders.")
-                return
-            self.fitter = BoxFitter(weights)
-            self.status_label.setText("Loading SAM...")
-            QApplication.processEvents()
+        self.sam_seq += 1
+        rid = self.sam_seq
         if isinstance(prompt, Box):
             if index is None:
                 index = len(c.boxes) - 1  # the box just drawn
-            new = self.fitter.fit(c.img, box=prompt)
-            if new is None:
-                self.status_label.setText("SAM found nothing there.")
+            target = c.boxes[index] if 0 <= index < len(c.boxes) else None
+            self.sam_pending[rid] = {"path": self.cur_path, "box": target}
+            self.sam_request.emit(rid, c.img, prompt.norm(), None)
+        else:
+            self.sam_pending[rid] = {"path": self.cur_path, "box": None, "cls": c.cls}
+            self.sam_request.emit(rid, c.img, None, tuple(prompt))
+        self.status_label.setText("SAM...")
+
+    @pyqtSlot(int, object)
+    def on_sam_ready(self, rid: int, new) -> None:
+        req = self.sam_pending.pop(rid, None)
+        c = self.canvas
+        if req is None or req["path"] != self.cur_path or c.img is None:
+            self.status_label.setText("SAM result dropped: the frame changed.")
+            return
+        if new is None:
+            self.status_label.setText("SAM found nothing there.")
+            return
+        if req["box"] is not None:
+            # edits move boxes in place, so the identity survives them; undo / redo / a delete replace or remove it
+            i = next((k for k, b in enumerate(c.boxes) if b is req["box"]), -1)
+            if i < 0:
+                self.status_label.setText("SAM result dropped: the box changed.")
                 return
-            new.cls = c.boxes[index].cls if 0 <= index < len(c.boxes) else c.cls
+            new.cls = c.boxes[i].cls
             c.snapshot()
-            c.boxes[index] = new
+            c.boxes[i] = new
             c.edited()
         else:
-            new = self.fitter.fit(c.img, point=prompt)
-            if new is None:
-                self.status_label.setText("SAM found nothing there.")
-                return
-            new.cls = c.cls
+            new.cls = req["cls"]
             c.add_box(new)
         self.status_label.setText(f"SAM box {new.w:.0f} x {new.h:.0f} px")
+
+    @pyqtSlot(int, str)
+    def on_sam_failed(self, rid: int, msg: str) -> None:
+        self.sam_pending.pop(rid, None)
+        self.status_label.setText(msg)
 
     # ================================================================ auto-label, export, training
     def model_dirs(self) -> list[Path]:
@@ -1066,6 +1113,7 @@ class MainWindow(QMainWindow):
         self.cancel_loader()
         self.reloader = None
         stop_jobs(self)
+        self.shutdown_sam()
         self.settings.setValue("geometry", self.saveGeometry())
         self.pool.shutdown(wait=False, cancel_futures=True)
         super().closeEvent(e)
