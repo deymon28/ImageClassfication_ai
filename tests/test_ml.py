@@ -100,3 +100,13 @@ def test_mask_box_within_joins_occluded_parts_and_drops_specks():
     m[0:10, 0:10] = 1     # another object outside the prompt
     assert mask_box_within(m, 25, 15, 75, 85) == (30.0, 20.0, 56.0, 80.0)
     assert mask_box_within(m, 90, 90, 99, 99) is None
+
+
+def test_torch_loads_after_qt_in_a_fresh_process():
+    """PyQt6 ships an old msvcp140.dll; importing it before torch used to break c10.dll (WinError 1114)."""
+    import subprocess
+    import sys
+
+    code = "import framelabel; from PyQt6 import QtWidgets; import torch; torch.zeros(1)"
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-500:]
