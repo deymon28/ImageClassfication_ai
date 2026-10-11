@@ -28,6 +28,7 @@ from framelabel.perf import setup_logging, timed
 from .canvas import Canvas
 from .grid import Grid
 from .keys import Keymap, key_name
+from .process_job import ProcessJob
 from .workers import Job, start_job, stop_jobs
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1013,29 +1014,28 @@ class MainWindow(QMainWindow):
             return
         cfg, sessions, redo = dlg.result_config()
         self.commit_current()
-        from framelabel.ml.predict import prelabel_sessions
-
-        def run(progress, cancelled):
-            from framelabel.ml.models import model_class_names
-
-            cfg.class_maps = []
-            for m in cfg.models:
-                names = model_class_names(str(m))
-                cfg.class_maps.append({i: self.project.map_model_class(n, i, len(names)) for i, n in enumerate(names)})
-            return prelabel_sessions(sessions, cfg, redo, progress, cancelled, self.project.ignore_zones)
-
-        self.run_job(Job(run), "Prelabeling", self.after_prelabel)
+        target = self.project.path or self.project.sources[0]
+        args = ["-m", "framelabel", "prelabel", str(target), "--models", *map(str, cfg.models), "--imgsz", str(cfg.imgsz),
+                "--conf", str(cfg.conf), "--tta" if cfg.tta else "--no-tta", "--batch", str(cfg.batch),
+                "--max-vram-gb", str(cfg.max_vram_gb), "--session", *[s.name for s in sessions],
+                "--progress-json", "--cancel-file", "{cancel_file}"]
+        if redo:
+            args.append("--redo")
+        self.run_job(ProcessJob(args), "Prelabeling", self.after_prelabel)
 
     def after_prelabel(self, stats: dict) -> None:
         QMessageBox.information(self, "Prelabel", f"{stats['done']} of {stats['frames']} frames, "
-                                f"{stats['with_proposals']} with proposals, {stats['seconds']:.0f} s")
+                                f"{stats['with_proposals']} with proposals, {stats['seconds']:.0f} s"
+                                + (" (cancelled)" if stats.get("cancelled") else ""))
         self.reload_session()
 
-    def run_job(self, job: Job, title: str, done) -> None:
+    def run_job(self, job, title: str, done) -> None:
+        """Run a Job (thread) or a ProcessJob (child process) with the progress bar and the Cancel button."""
         if self.job is not None:
             QMessageBox.information(self, "Busy", "Another job is running.")
             return
         self.job = job
+        self.job_title = title
         self.progress.setVisible(True)
         self.cancel_btn.setVisible(True)
         self.progress.setRange(0, 0)
@@ -1045,26 +1045,36 @@ class MainWindow(QMainWindow):
             self.progress.setValue(i)
             self.status_label.setText(f"{title}: {i}/{n}  {msg}")
 
-        def finish(result):
+        def end():
             self.job = None
             self.progress.setVisible(False)
             self.cancel_btn.setVisible(False)
+
+        def finish(result):
+            end()
             done(result)
 
         def fail(msg):
-            self.job = None
-            self.progress.setVisible(False)
-            self.cancel_btn.setVisible(False)
+            end()
             QMessageBox.critical(self, title, msg)
+
+        def abort():
+            end()
+            self.status_label.setText(f"{title}: cancelled.")
 
         job.progress.connect(prog)
         job.finished.connect(finish)
         job.failed.connect(fail)
-        start_job(self, job)
+        if hasattr(job, "aborted"):
+            job.aborted.connect(abort)
+        if isinstance(job, ProcessJob):
+            job.start()
+        else:
+            start_job(self, job)
 
     def cancel_job(self) -> None:
         if self.job is not None:
-            self.job.cancel_requested = True
+            self.job.cancel()
             self.status_label.setText("Cancelling after the current batch...")
 
     def export_dialog(self) -> None:

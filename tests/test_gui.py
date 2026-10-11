@@ -270,3 +270,52 @@ def test_sam_click_adds_a_box_and_a_dropped_result_changes_nothing(app, project,
     wait_until(app, lambda: not w.sam_pending)
     assert w.canvas.boxes == [] and "dropped" in w.status_label.text()
     w.close()
+
+
+def run_process_job(app, code):
+    import sys
+
+    from framelabel.gui.process_job import ProcessJob
+
+    job = ProcessJob(["-c", code], sys.executable)
+    seen = {"progress": [], "finished": [], "failed": []}
+    job.progress.connect(lambda i, n, m: seen["progress"].append((i, n, m)))
+    job.finished.connect(seen["finished"].append)
+    job.failed.connect(seen["failed"].append)
+    job.start()
+    wait_until(app, lambda: seen["finished"] or seen["failed"])
+    return seen
+
+
+def test_process_job_parses_the_protocol(app):
+    code = ("print('noise', flush=True);"
+            "print('@@progress {\"done\": 4, \"total\": 10, \"msg\": \"a\"}', flush=True);"
+            "print('@@progress {\"done\": 10, \"total\": 10, \"msg\": \"b\"}', flush=True);"
+            "print('@@result {\"done\": 10, \"cancelled\": false}', flush=True)")
+    seen = run_process_job(app, code)
+    assert seen["progress"] == [(4, 10, "a"), (10, 10, "b")]
+    assert seen["finished"] == [{"done": 10, "cancelled": False}] and not seen["failed"]
+
+
+def test_process_job_reports_errors(app):
+    seen = run_process_job(app, "import sys; print('@@error boom', flush=True); sys.exit(1)")
+    assert seen["failed"] == ["boom"] and not seen["finished"]
+    seen = run_process_job(app, "print('some text'); raise SystemExit(3)")
+    assert "code 3" in seen["failed"][0] and "some text" in seen["failed"][0]
+
+
+def test_process_job_cancel_file_stops_the_child(app):
+    import sys
+
+    from framelabel.gui.process_job import ProcessJob
+
+    code = ("import os, time, sys\nf = sys.argv[1]\nwhile not os.path.exists(f): time.sleep(0.05)\n"
+            "print('@@result {\"cancelled\": true}', flush=True)")
+    job = ProcessJob(["-c", code, "{cancel_file}"], sys.executable)
+    got = []
+    job.finished.connect(got.append)
+    job.start()
+    app.processEvents()
+    job.cancel()
+    wait_until(app, lambda: got)
+    assert got == [{"cancelled": True}] and not job.cancel_file.exists()

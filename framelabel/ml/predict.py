@@ -108,7 +108,7 @@ def prelabel_sessions(sessions: list[Session], cfg: PredictConfig, redo: bool = 
     for s in sessions:
         s.auto_dir.mkdir(parents=True, exist_ok=True)
         todo += [(s, p) for p in s.frames() if redo or not s.auto_path(p.stem).exists()]
-    stats = {"frames": len(todo), "done": 0, "with_proposals": 0, "seconds": 0.0}
+    stats = {"frames": len(todo), "done": 0, "with_proposals": 0, "seconds": 0.0, "cancelled": False}
     if not todo:
         return stats
     t0 = time.perf_counter()
@@ -117,6 +117,7 @@ def prelabel_sessions(sessions: list[Session], cfg: PredictConfig, redo: bool = 
 
     for start in range(0, len(todo), cfg.batch):
         if cancelled and cancelled():
+            stats["cancelled"] = True
             break
         chunk = todo[start:start + cfg.batch]
         images = [cv2.imread(str(p)) for _, p in chunk]

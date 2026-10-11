@@ -20,18 +20,21 @@ def app_data_dir() -> Path:
     return Path(base) / "framelabel" if base else Path.home() / ".framelabel"
 
 
-def setup_logging(level: int = logging.INFO) -> Path:
-    """Console + rotating file log (2 MB x 3). Returns the log folder. Safe to call twice."""
+def setup_logging(level: int = logging.INFO, to_file: bool = True) -> Path:
+    """Console + rotating file log (2 MB x 3; to_file=False for helper processes: two processes must not rotate the
+    same file). Returns the log folder. Safe to call twice."""
     folder = app_data_dir() / "logs"
-    folder.mkdir(parents=True, exist_ok=True)
+    if to_file:
+        folder.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger("framelabel")
     if not root.handlers:
         fmt = logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s")
-        fh = RotatingFileHandler(folder / "framelabel.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
-        fh.setFormatter(fmt)
+        if to_file:
+            fh = RotatingFileHandler(folder / "framelabel.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
         ch = logging.StreamHandler()
         ch.setFormatter(fmt)
-        root.addHandler(fh)
         root.addHandler(ch)
         root.setLevel(level)
     return folder

@@ -110,3 +110,12 @@ def test_torch_loads_after_qt_in_a_fresh_process():
     code = "import framelabel; from PyQt6 import QtWidgets; import torch; torch.zeros(1)"
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr[-500:]
+
+
+def test_prelabel_tta_flag_can_be_turned_off():
+    from framelabel.__main__ import build_parser
+
+    p = build_parser()
+    assert p.parse_args(["prelabel", "x"]).tta is None  # not given: the project's default decides
+    assert p.parse_args(["prelabel", "x", "--tta"]).tta is True
+    assert p.parse_args(["prelabel", "x", "--no-tta"]).tta is False
