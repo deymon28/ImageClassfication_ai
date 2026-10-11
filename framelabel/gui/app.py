@@ -25,6 +25,7 @@ from framelabel.core.propagate import propagate
 from framelabel.core.queues import FrameInfo
 from framelabel.core.session import Session, session_overview
 from framelabel.core.workspace import Workspace
+from framelabel.core import index_cache
 from framelabel.perf import setup_logging, timed
 from .canvas import Canvas, to_qimage
 from .frame_list import FrameListModel
@@ -66,11 +67,14 @@ def make_settings() -> QSettings:
 class MainWindow(QMainWindow):
     session_loaded = pyqtSignal()  # a session's workspace was applied (also used by tests)
     sam_request = pyqtSignal(int, object, object, object)  # request id, image, rough Box, click point
+    sam_preload_request = pyqtSignal()
 
     def __init__(self, target: Path | None = None):
         super().__init__()
         self.settings = make_settings()
         self.keymap = Keymap(json.loads(self.settings.value("keymap", "{}") or "{}"))
+        self.prefetch_ahead = 2
+        self.apply_perf_settings()
         self.project: Project | None = None
         self.sessions: list[Session] = []
         self.ws: Workspace | None = None
@@ -103,6 +107,18 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self.open_target(Path(target)))
         elif (recent := self.recent()) and Path(recent[0]).exists():
             QTimer.singleShot(0, lambda: self.open_target(Path(recent[0])))
+
+    def setting_bool(self, key: str, default: bool) -> bool:
+        v = self.settings.value(key, default)
+        return v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes")
+
+    def apply_perf_settings(self) -> None:
+        """Performance preferences (File > Performance settings); the watchdog is read at startup by run_app."""
+        try:
+            index_cache.IO_WORKERS = min(max(int(self.settings.value("perf/io_threads", 8)), 1), 32)
+            self.prefetch_ahead = min(max(int(self.settings.value("perf/prefetch", 2)), 0), 8)
+        except (TypeError, ValueError):
+            pass
 
     # ================================================================ UI
     def build_ui(self) -> None:
@@ -249,6 +265,7 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self.act(m, "Project settings...", self.project_settings)
         self.act(m, "Keyboard shortcuts...", self.keyboard_dialog)
+        self.act(m, "Performance settings...", self.performance_dialog)
         m.addSeparator()
         self.act(m, "Export YOLO dataset...", self.export_dialog, shortcut="Ctrl+E")
         m.addSeparator()
@@ -485,6 +502,8 @@ class MainWindow(QMainWindow):
         triage = ws.queue("triage")
         unreviewed_in_triage = any(f.status is None for f in triage)
         self.set_mode("grid" if unreviewed_in_triage else "edit", queue="triage" if unreviewed_in_triage else "edit")
+        if self.setting_bool("perf/sam_preload", False) and self.ensure_sam(quiet=True):
+            self.sam_preload_request.emit()
         self.session_loaded.emit()
 
     @pyqtSlot(str)
@@ -663,7 +682,8 @@ class MainWindow(QMainWindow):
         frames and the previous one prefetching (the worker also converts to QImage); drops the rest."""
         f = self.prefetch.pop(path, None)
         img, qimg = f.result() if f is not None else read_frame(path)
-        wanted = [self.queue[i].path for i in (self.idx + 1, self.idx + 2, self.idx - 1) if 0 <= i < len(self.queue)]
+        wanted = [self.queue[i].path for i in (*range(self.idx + 1, self.idx + 1 + self.prefetch_ahead), self.idx - 1)
+                  if 0 <= i < len(self.queue)]
         for p in [p for p in self.prefetch if p not in wanted]:
             self.prefetch.pop(p).cancel()
         for p in wanted:
@@ -976,7 +996,7 @@ class MainWindow(QMainWindow):
         del stems
 
     # ================================================================ SAM
-    def ensure_sam(self) -> bool:
+    def ensure_sam(self, quiet: bool = False) -> bool:
         """Start the SAM thread (once per weights file); False when there are no SAM weights."""
         from framelabel.ml.models import find_sam
 
@@ -984,7 +1004,8 @@ class MainWindow(QMainWindow):
 
         weights = find_sam(self.model_dirs())
         if weights is None:
-            QMessageBox.information(self, "SAM", "No SAM weights (e.g. sam2.1_b.pt) found in the model folders.")
+            if not quiet:
+                QMessageBox.information(self, "SAM", "No SAM weights (e.g. sam2.1_b.pt) found in the model folders.")
             return False
         if self.sam_thread is not None and weights == self.sam_weights:
             return True
@@ -995,6 +1016,7 @@ class MainWindow(QMainWindow):
         self.sam_worker.moveToThread(self.sam_thread)
         self.sam_thread.finished.connect(self.sam_worker.deleteLater)
         self.sam_request.connect(self.sam_worker.fit)
+        self.sam_preload_request.connect(self.sam_worker.preload)
         self.sam_worker.ready.connect(self.on_sam_ready)
         self.sam_worker.failed.connect(self.on_sam_failed)
         self.sam_worker.status.connect(self.status_label.setText)
@@ -1197,6 +1219,15 @@ class MainWindow(QMainWindow):
                 self.project.save()
             self.open_target(self.project.path or self.project.sources[0])
 
+    def performance_dialog(self) -> None:
+        from .dialogs import PerformanceDialog
+
+        dlg = PerformanceDialog(self.settings, self)
+        if dlg.exec():
+            dlg.apply()
+            self.apply_perf_settings()
+            self.status_label.setText("Performance settings saved (the freeze watchdog applies at the next start).")
+
     def keyboard_dialog(self) -> None:
         from .dialogs import KeymapDialog
 
@@ -1263,7 +1294,7 @@ def run_app(target: Path | None = None) -> int:
     w = MainWindow(target)
     w.show()
     watchdog = None
-    if os.environ.get("FRAMELABEL_WATCHDOG", "1") != "0":
+    if os.environ.get("FRAMELABEL_WATCHDOG", "1") != "0" and w.setting_bool("perf/watchdog", True):
         from .watchdog import Watchdog
 
         watchdog = Watchdog(log_dir)

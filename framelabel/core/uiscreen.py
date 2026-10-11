@@ -12,6 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from . import index_cache
 from .index_cache import Cancelled, cache_dir
 from .session import Session
 
@@ -24,14 +25,14 @@ def zone_crop(gray: np.ndarray, zone) -> np.ndarray:
     return gray[int(y1 * h):int(y2 * h), int(x1 * w):int(x2 * w)].astype(np.float32)
 
 
-def _read_crops(frames: list[Path], zone, progress, cancelled, workers: int = 8) -> dict[str, np.ndarray | None]:
+def _read_crops(frames: list[Path], zone, progress, cancelled, workers: int | None = None) -> dict[str, np.ndarray | None]:
     """HUD-zone crops of the frames (a reduced grayscale decode, in parallel: cv2.imread releases the GIL)."""
     def read(p: Path):
         img = cv2.imread(str(p), cv2.IMREAD_REDUCED_GRAYSCALE_2)
         return zone_crop(img, zone) if img is not None else None
 
     out: dict[str, np.ndarray | None] = {}
-    ex = ThreadPoolExecutor(workers)
+    ex = ThreadPoolExecutor(workers or index_cache.IO_WORKERS)
     try:
         for i, (p, crop) in enumerate(zip(frames, ex.map(read, frames))):
             out[p.stem] = crop

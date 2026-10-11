@@ -21,6 +21,7 @@ from .boxes import parse_rows
 log = logging.getLogger("framelabel.cache")
 CACHE_VERSION = 1
 _write_lock = threading.Lock()
+IO_WORKERS = 8  # threads for reading many small files / frames (a preference of the window)
 
 
 class Cancelled(Exception):
@@ -67,7 +68,7 @@ def _rows(raw) -> list[tuple]:
 
 
 def read_rows_cached(folder: Path, wanted: set[str] | None = None, progress=None, cancelled=None,
-                     workers: int = 8) -> dict[str, list[tuple]]:
+                     workers: int | None = None) -> dict[str, list[tuple]]:
     """Parsed YOLO rows (core.boxes.parse_rows tuples) of every txt file in folder (only stems in `wanted` when
     given). A stem without a file is absent from the result; an empty file maps to []."""
     folder = Path(folder)
@@ -96,7 +97,7 @@ def read_rows_cached(folder: Path, wanted: set[str] | None = None, progress=None
             except OSError:  # vanished or locked meanwhile
                 return stem, None
 
-        ex = ThreadPoolExecutor(workers)
+        ex = ThreadPoolExecutor(workers or IO_WORKERS)
         try:
             futures = [ex.submit(read, s) for s in to_read]
             for n, f in enumerate(as_completed(futures), 1):

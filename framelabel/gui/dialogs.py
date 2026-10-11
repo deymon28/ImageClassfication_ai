@@ -484,3 +484,49 @@ class KeymapDialog(QDialog):
     def accept(self) -> None:
         self.keymap = Keymap(self.overrides())
         super().accept()
+
+
+class PerformanceDialog(QDialog):
+    """Preferences that trade memory / CPU for responsiveness. Values are stored under perf/ in the settings."""
+
+    def __init__(self, settings, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Performance settings")
+        self.settings = settings
+        lay = QVBoxLayout(self)
+        form = QFormLayout()
+
+        def boolean(key: str, default: bool) -> bool:
+            v = settings.value(key, default)
+            return v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes")
+
+        def number(key: str, default: int) -> int:
+            try:
+                return int(settings.value(key, default))
+            except (TypeError, ValueError):
+                return default
+
+        self.watchdog = QCheckBox("Log a stack trace when the window freezes for 2 s (applies at the next start)")
+        self.watchdog.setChecked(boolean("perf/watchdog", True))
+        self.io = QSpinBox()
+        self.io.setRange(1, 32)
+        self.io.setValue(number("perf/io_threads", 8))
+        self.io.setToolTip("Threads that read label files and frames when a session opens")
+        self.prefetch = QSpinBox()
+        self.prefetch.setRange(0, 8)
+        self.prefetch.setValue(number("perf/prefetch", 2))
+        self.prefetch.setToolTip("Frames read ahead of the current one in the editor (one behind is always kept)")
+        self.preload = QCheckBox("Load SAM in the background after a session opens (uses VRAM; the game must be closed)")
+        self.preload.setChecked(boolean("perf/sam_preload", False))
+        form.addRow("", self.watchdog)
+        form.addRow("I/O threads", self.io)
+        form.addRow("Frames read ahead", self.prefetch)
+        form.addRow("", self.preload)
+        lay.addLayout(form)
+        lay.addWidget(buttons(self))
+
+    def apply(self) -> None:
+        self.settings.setValue("perf/watchdog", self.watchdog.isChecked())
+        self.settings.setValue("perf/io_threads", self.io.value())
+        self.settings.setValue("perf/prefetch", self.prefetch.value())
+        self.settings.setValue("perf/sam_preload", self.preload.isChecked())

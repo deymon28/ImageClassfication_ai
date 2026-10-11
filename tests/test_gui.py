@@ -557,3 +557,42 @@ def test_sam_fit_all_boxes(app, project, fake_sam):
     wait_until(app, lambda: not w.sam_pending)
     assert [(b.x1, b.y1, b.x2, b.y2, b.cls) for b in w.canvas.boxes] == [(10, 10, 50, 90, 1), (10, 10, 50, 90, 0)]
     w.close()
+
+
+def test_performance_settings_are_applied(app, project):
+    from framelabel.core import index_cache
+    from framelabel.gui.app import MainWindow
+    from framelabel.gui.dialogs import PerformanceDialog
+
+    path, _ = project
+    w = MainWindow()
+    w.settings.clear()
+    dlg = PerformanceDialog(w.settings, w)
+    assert (dlg.io.value(), dlg.prefetch.value(), dlg.watchdog.isChecked(), dlg.preload.isChecked()) == (8, 2, True, False)
+    dlg.io.setValue(3)
+    dlg.prefetch.setValue(0)
+    dlg.watchdog.setChecked(False)
+    dlg.apply()
+    w.apply_perf_settings()
+    try:
+        assert index_cache.IO_WORKERS == 3 and w.prefetch_ahead == 0 and not w.setting_bool("perf/watchdog", True)
+        open_and_wait(app, w, path)
+        w.set_mode("edit", queue="all")
+        w.go(2)
+        assert sorted(p.stem for p in w.prefetch) == ["100001_000"]  # only the frame behind
+    finally:
+        index_cache.IO_WORKERS = 8
+    w.close()
+
+
+def test_sam_preload_loads_the_model_after_the_session_opens(app, project, fake_sam):
+    from framelabel.gui.app import MainWindow
+
+    path, _ = project
+    w = MainWindow()
+    w.settings.clear()
+    w.settings.setValue("perf/sam_preload", True)
+    open_and_wait(app, w, path)
+    wait_until(app, lambda: w.sam_worker is not None and w.sam_worker.fitter is not None)
+    assert "SAM ready" in w.status_label.text() or w.sam_worker.fitter is not None
+    w.close()
