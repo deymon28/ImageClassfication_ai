@@ -596,3 +596,24 @@ def test_sam_preload_loads_the_model_after_the_session_opens(app, project, fake_
     wait_until(app, lambda: w.sam_worker is not None and w.sam_worker.fitter is not None)
     assert "SAM ready" in w.status_label.text() or w.sam_worker.fitter is not None
     w.close()
+
+
+def test_sam_requests_are_served_by_one_python_thread(app, project, fake_sam):
+    """Every request must run in the same long-lived Python thread: in a Qt slot thread the second torch call crashed
+    the process (pybind11 caches the thread state of the calling thread)."""
+    import threading
+
+    seen = []
+    real = FakeFitter.fit
+    FakeFitter.fit = lambda self, *a, **k: (seen.append(threading.get_ident()), real(self, *a, **k))[1]
+    try:
+        w = editor_with_box(app, project)
+        for _ in range(3):
+            w.sam_fit(w.canvas.boxes[0], index=0)
+            wait_until(app, lambda: not w.sam_pending)
+    finally:
+        FakeFitter.fit = real
+    assert len(seen) == 3 and len(set(seen)) == 1 and seen[0] != threading.get_ident()
+    assert isinstance(w.sam_worker.thread, threading.Thread) and w.sam_worker.thread.is_alive()
+    w.close()
+    assert w.sam_worker is None

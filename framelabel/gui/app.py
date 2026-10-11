@@ -66,8 +66,6 @@ def make_settings() -> QSettings:
 
 class MainWindow(QMainWindow):
     session_loaded = pyqtSignal()  # a session's workspace was applied (also used by tests)
-    sam_request = pyqtSignal(int, object, object, object)  # request id, image, rough Box, click point
-    sam_preload_request = pyqtSignal()
 
     def __init__(self, target: Path | None = None):
         super().__init__()
@@ -84,8 +82,7 @@ class MainWindow(QMainWindow):
         self.cur_path: Path | None = None
         self.prefetch: dict[Path, Future] = {}
         self.pool = ThreadPoolExecutor(2)
-        self.sam_thread: QThread | None = None
-        self.sam_worker = None
+        self.sam_worker = None  # SamWorker: its own Python thread, started on the first use
         self.sam_weights: Path | None = None
         self.sam_seq = 0
         self.sam_pending: dict[int, dict] = {}
@@ -503,7 +500,7 @@ class MainWindow(QMainWindow):
         unreviewed_in_triage = any(f.status is None for f in triage)
         self.set_mode("grid" if unreviewed_in_triage else "edit", queue="triage" if unreviewed_in_triage else "edit")
         if self.setting_bool("perf/sam_preload", False) and self.ensure_sam(quiet=True):
-            self.sam_preload_request.emit()
+            self.sam_worker.preload()
         self.session_loaded.emit()
 
     @pyqtSlot(str)
@@ -1007,29 +1004,21 @@ class MainWindow(QMainWindow):
             if not quiet:
                 QMessageBox.information(self, "SAM", "No SAM weights (e.g. sam2.1_b.pt) found in the model folders.")
             return False
-        if self.sam_thread is not None and weights == self.sam_weights:
+        if self.sam_worker is not None and weights == self.sam_weights:
             return True
         self.shutdown_sam()
         self.sam_weights = weights
-        self.sam_thread = QThread(self)
         self.sam_worker = SamWorker(weights, self.project.game_processes or ["UAGame.exe"])
-        self.sam_worker.moveToThread(self.sam_thread)
-        self.sam_thread.finished.connect(self.sam_worker.deleteLater)
-        self.sam_request.connect(self.sam_worker.fit)
-        self.sam_preload_request.connect(self.sam_worker.preload)
         self.sam_worker.ready.connect(self.on_sam_ready)
         self.sam_worker.failed.connect(self.on_sam_failed)
         self.sam_worker.status.connect(self.status_label.setText)
-        self.sam_thread.start()
+        self.sam_worker.start()
         return True
 
     def shutdown_sam(self) -> None:
-        if self.sam_thread is not None:
-            self.sam_thread.quit()
-            if not self.sam_thread.wait(10000):
-                log.warning("the SAM thread did not stop")
-            self.sam_thread.deleteLater()
-        self.sam_thread = self.sam_worker = self.sam_weights = None
+        if self.sam_worker is not None and not self.sam_worker.stop():
+            log.warning("the SAM thread did not stop (it is a daemon thread and ends with the process)")
+        self.sam_worker = self.sam_weights = None
         self.sam_pending.clear()
 
     def sam_fit(self, prompt, index: int | None = None) -> None:
@@ -1044,10 +1033,10 @@ class MainWindow(QMainWindow):
                 index = len(c.boxes) - 1  # the box just drawn
             target = c.boxes[index] if 0 <= index < len(c.boxes) else None
             self.sam_pending[rid] = {"path": self.cur_path, "box": target}
-            self.sam_request.emit(rid, c.img, prompt.norm(), None)
+            self.sam_worker.submit(rid, c.img, prompt.norm(), None)
         else:
             self.sam_pending[rid] = {"path": self.cur_path, "box": None, "cls": c.cls}
-            self.sam_request.emit(rid, c.img, None, tuple(prompt))
+            self.sam_worker.submit(rid, c.img, None, tuple(prompt))
         self.status_label.setText("SAM...")
 
     @pyqtSlot(int, object)
