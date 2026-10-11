@@ -546,3 +546,14 @@ def test_session_box_shows_counts(app, project):
     wait_until(app, lambda: "frames" in w.session_box.itemText(0))
     assert w.session_box.itemText(0).startswith(s.name) and "(8 frames, 0 reviewed, 0 labeled)" in w.session_box.itemText(0)
     w.close()
+
+
+def test_sam_fit_all_boxes(app, project, fake_sam):
+    from framelabel.core.boxes import Box
+
+    w = editor_with_box(app, project)
+    w.canvas.add_box(Box(200, 20, 260, 90, 0))
+    w.do("sam_fit_all")
+    wait_until(app, lambda: not w.sam_pending)
+    assert [(b.x1, b.y1, b.x2, b.y2, b.cls) for b in w.canvas.boxes] == [(10, 10, 50, 90, 1), (10, 10, 50, 90, 0)]
+    w.close()

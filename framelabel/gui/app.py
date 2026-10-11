@@ -270,6 +270,7 @@ class MainWindow(QMainWindow):
         self.act(m, "Copy boxes from previous frame", lambda: self.do("copy_prev"), "copy_prev")
         self.act(m, "Track boxes from previous frame", lambda: self.do("propagate_prev"), "propagate_prev")
         self.act(m, "Fit selected box with SAM (Alt+click: from a point)", lambda: self.do("sam_fit"), "sam_fit")
+        self.act(m, "Fit all boxes on this frame with SAM", lambda: self.do("sam_fit_all"))
 
         m = mb.addMenu("&View")
         self.act(m, "Grid / editor", lambda: self.do("switch_mode"), "switch_mode")
@@ -921,6 +922,9 @@ class MainWindow(QMainWindow):
             t = c.target_box()
             if t >= 0:
                 self.sam_fit(c.boxes[t], index=t)
+        elif action == "sam_fit_all":
+            for i in range(len(c.boxes)):  # one request per box; each answer replaces its own box (undoable)
+                self.sam_fit(c.boxes[i], index=i)
         elif action == "save":
             self.commit_current(force=True)
         self.update_status()
