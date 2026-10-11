@@ -1,0 +1,9 @@
+# torch/torchvision: install a CUDA build matching your GPU separately (https://pytorch.org)
+ultralytics==8.4.174
+PyQt6>=6.6
+opencv-python
+numpy
+pyyaml
+psutil
+pillow
+pytest

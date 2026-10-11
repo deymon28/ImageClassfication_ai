@@ -1,0 +1,289 @@
+"""Grid triage: a page of frame tiles to confirm quickly. LMB marks 'has objects', MMB or Ctrl+LMB marks 'skip',
+RMB opens a full-size preview (wheel zoom, drag pan, click toggles the mark). Committing the page saves unmarked
+frames as empty, marked ones go to the edit queue, skip marks are saved as skipped."""
+from __future__ import annotations
+
+from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
+
+import cv2
+import numpy as np
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PyQt6.QtWidgets import QWidget
+
+from framelabel.core.queues import FrameInfo
+from framelabel.core.view import View
+from .canvas import to_qimage
+
+GAP = 6
+
+
+def grid_layout(aw: int, ah: int, cols: int, rows: int, aspect: tuple[int, int]) -> tuple[int, int, int, int]:
+    """Largest aspect-correct tiles that fit the area, the grid centred -> (x0, y0, tile w, tile h)."""
+    h0, w0 = aspect
+    tw = (aw - GAP * (cols + 1)) // cols
+    th = round(tw * h0 / w0)
+    if th * rows + GAP * (rows + 1) > ah:
+        th = (ah - GAP * (rows + 1)) // rows
+        tw = round(th * w0 / h0)
+    tw, th = max(tw, 16), max(th, 9)
+    x0 = (aw - (cols * tw + (cols - 1) * GAP)) // 2
+    y0 = (ah - (rows * th + (rows - 1) * GAP)) // 2
+    return x0, y0, tw, th
+
+
+class Grid(QWidget):
+    marks_changed = pyqtSignal()
+    page_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.items: list[FrameInfo] = []
+        self.cols, self.rows = 3, 3
+        self.page = 0
+        self.marks: dict[str, str] = {}
+        self.ui_threshold = 0.3
+        self.show_weak = True
+        self.aspect = (9, 16)
+        self.pool = ThreadPoolExecutor(2)
+        self.cache: dict[tuple, Future] = {}
+        self.hover = -1
+        self.preview: FrameInfo | None = None
+        self.preview_img: np.ndarray | None = None
+        self.preview_q: QImage | None = None
+        self.preview_view: View | None = None
+        self.press: QPointF | None = None
+        self.last: QPointF | None = None
+        self.title = ""
+        self.class_colors: list[QColor] = [QColor("#ff2828")]
+
+    @property
+    def per_page(self) -> int:
+        return self.cols * self.rows
+
+    @property
+    def n_pages(self) -> int:
+        return max(1, -(-len(self.items) // self.per_page))
+
+    def page_items(self, page: int | None = None) -> list[FrameInfo]:
+        page = self.page if page is None else page
+        return self.items[page * self.per_page:(page + 1) * self.per_page]
+
+    def set_items(self, items: list[FrameInfo], page: int = 0, initial_mark=None) -> None:
+        self.items = items
+        self.cache.clear()
+        if items:
+            img = cv2.imread(str(items[0].path), cv2.IMREAD_REDUCED_COLOR_4)
+            if img is not None:
+                self.aspect = img.shape[:2]
+        self.initial_mark = initial_mark or (lambda fi: None)
+        self.set_page(page)
+
+    def set_page(self, page: int) -> None:
+        self.page = min(max(page, 0), self.n_pages - 1)
+        self.marks = {fi.stem: m for fi in self.page_items() if (m := self.initial_mark(fi))}
+        self.close_preview()
+        self.page_changed.emit()
+        self.update()
+
+    def toggle(self, stem: str, kind: str) -> None:
+        if self.marks.get(stem) == kind:
+            del self.marks[stem]
+        else:
+            self.marks[stem] = kind
+        self.marks_changed.emit()
+        self.update()
+
+    # ---------------- tiles
+    def _load(self, page: int, tw: int, th: int) -> list[QImage]:
+        out = []
+        for fi in self.page_items(page):
+            img = cv2.imread(str(fi.path), cv2.IMREAD_REDUCED_COLOR_2 if tw <= self.aspect[1] * 2 else cv2.IMREAD_COLOR)
+            if img is None:
+                img = np.zeros((th, tw, 3), np.uint8)
+            out.append(to_qimage(cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)))
+        return out
+
+    def tiles(self, tw: int, th: int) -> list[QImage] | None:
+        for key in list(self.cache):
+            if abs(key[0] - self.page) > 2 or key[1:] != (tw, th):
+                del self.cache[key]
+        for p in (self.page, self.page + 1):
+            if p < self.n_pages and (p, tw, th) not in self.cache:
+                self.cache[(p, tw, th)] = self.pool.submit(self._load, p, tw, th)
+        f = self.cache[(self.page, tw, th)]
+        if not f.done():
+            QTimer.singleShot(30, self.update)
+            return None
+        return f.result()
+
+    def layout_now(self) -> tuple[int, int, int, int]:
+        return grid_layout(self.width(), self.height(), self.cols, self.rows, self.aspect)
+
+    def tile_at(self, x: float, y: float) -> int:
+        x0, y0, tw, th = self.layout_now()
+        c, r = int((x - x0) // (tw + GAP)), int((y - y0) // (th + GAP))
+        if not (0 <= c < self.cols and 0 <= r < self.rows):
+            return -1
+        if (x - x0) - c * (tw + GAP) >= tw or (y - y0) - r * (th + GAP) >= th:
+            return -1
+        i = r * self.cols + c
+        return i if i < len(self.page_items()) else -1
+
+    # ---------------- painting
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(24, 24, 24))
+        if self.preview is not None:
+            self.paint_preview(p)
+            return
+        if not self.items:
+            p.setPen(QColor(160, 160, 160))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No frames in this view")
+            return
+        x0, y0, tw, th = self.layout_now()
+        tiles = self.tiles(tw, th)
+        font = QFont(self.font())
+        font.setPointSizeF(9)
+        p.setFont(font)
+        for i, fi in enumerate(self.page_items()):
+            x, y = x0 + (i % self.cols) * (tw + GAP), y0 + (i // self.cols) * (th + GAP)
+            rect = QRectF(x, y, tw, th)
+            if tiles is not None:
+                p.drawImage(rect, tiles[i])
+            else:
+                p.fillRect(rect, QColor(40, 40, 40))
+            if self.show_weak and fi.prop_xyxy is not None:
+                for (bx1, by1, bx2, by2), c in zip(fi.prop_xyxy, fi.confs):
+                    col = QColor(255, 200, 0, 90 + int(150 * min(c / 0.3, 1.0)))
+                    p.setPen(QPen(col, 1, Qt.PenStyle.DotLine))
+                    p.drawRect(QRectF(x + bx1 * tw, y + by1 * th, (bx2 - bx1) * tw, (by2 - by1) * th))
+            mark = self.marks.get(fi.stem)
+            if mark == "people":
+                p.setPen(QPen(QColor(255, 60, 60), 5))
+                p.drawRect(rect.adjusted(3, 3, -3, -3))
+                self.badge(p, x + 8, y + 8, "HAS OBJECTS", QColor(255, 60, 60))
+            elif mark == "skip":
+                p.fillRect(rect, QColor(0, 0, 0, 165))
+                p.setPen(QPen(QColor(160, 160, 160), 3))
+                p.drawRect(rect.adjusted(2, 2, -2, -2))
+                self.badge(p, x + 8, y + 8, "SKIP", QColor(170, 170, 170))
+            if i == self.hover and mark is None:
+                p.setPen(QPen(QColor(255, 255, 255), 2))
+                p.drawRect(rect.adjusted(1, 1, -1, -1))
+            tag = {"neg": "empty", "pos": "labeled", "skip": "skipped", "todo": "queued"}.get(fi.status or "", "")
+            if fi.max_conf > 0:
+                tag += f"  model {fi.max_conf:.2f}"
+            if fi.ui < self.ui_threshold:
+                tag += "  UI?"
+            text = f"{fi.stem}  {tag}"
+            tw_txt = p.fontMetrics().horizontalAdvance(text) + 8
+            p.fillRect(QRectF(x, y + th - 20, min(tw_txt, tw), 20), QColor(0, 0, 0, 150))
+            p.setPen(QColor(190, 255, 190) if fi.status else QColor(255, 255, 255))
+            p.drawText(QRectF(x + 4, y + th - 20, tw - 8, 20), Qt.AlignmentFlag.AlignVCenter, text)
+
+    def badge(self, p: QPainter, x: float, y: float, text: str, color: QColor) -> None:
+        f = QFont(self.font())
+        f.setPointSizeF(11)
+        f.setBold(True)
+        p.setFont(f)
+        w = p.fontMetrics().horizontalAdvance(text) + 12
+        p.fillRect(QRectF(x, y, w, 24), QColor(0, 0, 0, 170))
+        p.setPen(color)
+        p.drawText(QRectF(x + 6, y, w, 24), Qt.AlignmentFlag.AlignVCenter, text)
+        f.setPointSizeF(9)
+        f.setBold(False)
+        p.setFont(f)
+
+    def paint_preview(self, p: QPainter) -> None:
+        v = self.preview_view
+        v.fit(self.width(), self.height())
+        x1, y1, x2, y2 = v.visible_rect()
+        x1, y1, x2, y2 = int(x1), int(y1), min(v.iw, int(x2) + 1), min(v.ih, int(y2) + 1)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, v.s < 3)
+        p.drawImage(QRectF(QPointF(*v.to_widget(x1, y1)), QPointF(*v.to_widget(x2, y2))), self.preview_q,
+                    QRectF(x1, y1, x2 - x1, y2 - y1))
+        fi = self.preview
+        if fi.prop_xyxy is not None and self.show_weak:
+            for (bx1, by1, bx2, by2), c in zip(fi.prop_xyxy, fi.confs):
+                p.setPen(QPen(QColor(255, 200, 0, 200), 1, Qt.PenStyle.DotLine))
+                p.drawRect(QRectF(QPointF(*v.to_widget(bx1 * v.iw, by1 * v.ih)), QPointF(*v.to_widget(bx2 * v.iw, by2 * v.ih))))
+        mark = {"people": "HAS OBJECTS", "skip": "SKIP"}.get(self.marks.get(fi.stem, ""), "not marked")
+        self.badge(p, 10, 10, f"{fi.stem}  [{mark}]  zoom {v.zoom:.1f}x   click: toggle 'has objects' | RMB / Esc: back", QColor(255, 255, 255))
+
+    # ---------------- preview
+    def open_preview(self, fi: FrameInfo) -> None:
+        img = cv2.imread(str(fi.path))
+        if img is None:
+            return
+        self.preview, self.preview_img, self.preview_q = fi, img, to_qimage(img)
+        self.preview_view = View(img.shape[1], img.shape[0])
+        self.update()
+
+    def close_preview(self) -> None:
+        self.preview = self.preview_img = self.preview_q = self.preview_view = None
+        self.press = None
+        self.update()
+
+    # ---------------- mouse
+    def mousePressEvent(self, e) -> None:
+        pos = e.position()
+        self.last = pos
+        if self.preview is not None:
+            if e.button() == Qt.MouseButton.LeftButton or e.button() == Qt.MouseButton.MiddleButton:
+                self.press = pos
+            elif e.button() == Qt.MouseButton.RightButton:
+                self.close_preview()
+            return
+        i = self.tile_at(pos.x(), pos.y())
+        if i < 0:
+            return
+        fi = self.page_items()[i]
+        ctrl = e.modifiers() & Qt.KeyboardModifier.ControlModifier
+        if e.button() == Qt.MouseButton.MiddleButton or (e.button() == Qt.MouseButton.LeftButton and ctrl):
+            self.toggle(fi.stem, "skip")
+        elif e.button() == Qt.MouseButton.LeftButton:
+            self.toggle(fi.stem, "people")
+        elif e.button() == Qt.MouseButton.RightButton:
+            self.open_preview(fi)
+
+    def mouseMoveEvent(self, e) -> None:
+        pos = e.position()
+        if self.preview is not None:
+            if self.press is not None and self.last is not None:
+                self.preview_view.pan(pos.x() - self.last.x(), pos.y() - self.last.y())
+                self.update()
+            self.last = pos
+            return
+        h = self.tile_at(pos.x(), pos.y())
+        if h != self.hover:
+            self.hover = h
+            self.update()
+
+    def mouseReleaseEvent(self, e) -> None:
+        pos = e.position()
+        if self.preview is not None and self.press is not None:
+            moved = abs(pos.x() - self.press.x()) + abs(pos.y() - self.press.y())
+            self.press = None
+            if moved <= 4 and e.button() == Qt.MouseButton.LeftButton:
+                self.toggle(self.preview.stem, "people")
+                self.close_preview()
+
+    def wheelEvent(self, e) -> None:
+        if self.preview is not None:
+            pos = e.position()
+            self.preview_view.zoom_at(pos.x(), pos.y(), 1.25 if e.angleDelta().y() > 0 else 0.8)
+            self.update()
+
+    def leaveEvent(self, _e) -> None:
+        self.hover = -1
+        self.update()
+
+    def stems_on_page(self) -> list[str]:
+        return [fi.stem for fi in self.page_items()]
+
+    def paths_on_page(self) -> list[Path]:
+        return [fi.path for fi in self.page_items()]

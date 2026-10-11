@@ -1,0 +1,30 @@
+# Arena Breakout Infinite sessions recorded by screendet (fin_snip_helper). Copy to projects/abi.yaml and point the
+# paths at your checkout of fin_snip_helper (relative paths are relative to this file).
+name: Arena Breakout Infinite
+classes:
+  - {name: enemy, color: "#ff2828"}    # teammates are labeled 'enemy' too
+  - {name: corpse, color: "#00beff"}
+sources:
+  - ../../fin_snip_helper/datasets/collected      # every session_YYYYmmdd_HHMMSS folder inside
+ignore_zones:
+  - [0.0, 0.75, 0.07, 0.92]   # body-status silhouette icon (bottom-left HUD): models detect it as a person
+ui_detect:
+  zone: [0.0, 0.75, 0.07, 0.92]   # missing on inventory/map/death screens -> suggested 'skip'
+  threshold: 0.3
+game_processes: [UAGame.exe]
+model_dirs:
+  - ../models
+  - ../train_runs
+  - ../../fin_snip_helper/train_runs
+default_models:
+  - ../train_runs/abi_own_y26x/weights/best.pt
+class_map:
+  person: enemy
+export:
+  out: ../../fin_snip_helper/datasets/own
+  neg_ratio: 0.15
+  val_fraction: 0.15
+  block_s: 120
+prelabel:
+  imgsz: 1280
+  conf: 0.05

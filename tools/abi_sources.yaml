@@ -1,0 +1,43 @@
+# Public Roboflow sets used for the Arena Breakout Infinite labeler model (tools/build_labeler_data.py).
+# Each set was inspected visually (random contact sheets with labels drawn). Only PC Arena Breakout Infinite
+# footage is kept. Known label noise in the kept sets: corpses are labeled as enemies, some images are screenshots of
+# web pages with game thumbnails. That is why the public data trains a one-class 'person' model only; the
+# enemy/corpse split is learned from the user's own labels afterwards.
+#
+# keep: class names that are a full-body person ("*" = every class); drop_prefixes: file name prefixes of frames
+# from other games inside a mixed set.
+keep:
+  abi-ap50h__abi-ngjgn: "*"
+  abi-train__arena-breakout-infinite-ai: "*"
+  abi-train__enemy-bojcg: "*"
+  abo-gosuy__abo-veysf: "*"
+  ala-xuls__arena640-zvpat: ["0"]            # 1 = head
+  arena-breakout__breakout-breakpoint: "*"
+  b3-id4ur__arena-merge-v1-rb8gt: "*"        # merge of other ABI sets
+  hobby-4pd7o__qwer-yu6co: "*"
+  myworkspace-qucf4__aren_a-l0h5g: ["0"]     # 1 = head
+  personal-t5qbf__abi-hv0tw: "*"
+  personal-t5qbf__arena-breakout-infinite-model-iwlux: "*"
+  s-workspace-skls8__my-first-project-tvn4d: "*"
+  unknown-ctvi2__funny-call: "*"
+  yentls-workspace__abi-enemy-777: "*"
+  alexander-zwnup__arena-breakout-m3vig: "*"
+  ghosts-workspace-coumr__abi-esp: "*"
+  nathans-workspace-cklag__arena-breakout-dectetion: "*"
+  readlymayson__arena-breakout-with-head-ptywv: ["Enemy"]
+drop_prefixes:
+  alexander-zwnup__arena-breakout-m3vig: ["MWII", "frame_"]   # Modern Warfare II and Arena Breakout mobile frames
+excluded:  # for the record: not ABI PC footage
+  annotations-1grak__arma3-nixpw: Arma 3
+  arakatonga__enemy-detector-learning-project-vvgbj: Escape from Tarkov
+  awsomeman565-lufwy__humanoid: many different shooters
+  beastss__asac: Escape from Tarkov
+  eft-noqtc__eft-test: Escape from Tarkov
+  ktyolo__tarkov_pmc: Escape from Tarkov
+  personal-zfs1q__eft-qtgvv: Escape from Tarkov
+  rons-workspace-8wduh__enemys-pal5c: Escape from Tarkov bosses
+  sasha-kisnm__object-detection-for-operator: Escape from Tarkov
+  tarkov-zsnvy__tarkovarena: mostly Escape from Tarkov (menus, flea market)
+  test-ytlmn__pmc-and-head-detection: Escape from Tarkov and real photos
+  testenv-lgkes__zaduatestpez-qdlqq: Escape from Tarkov (menus)
+  drex-444__arena-breakout-3hpaj: Arena Breakout mobile

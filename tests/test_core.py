@@ -1,0 +1,305 @@
+import json
+
+import cv2
+import numpy as np
+import pytest
+
+from framelabel.core.boxes import Box, box_at, corner_at, edge_at, parse_rows, read_yolo, yolo_lines
+from framelabel.core.export import export_dataset, max_conf
+from framelabel.core.history import History
+from framelabel.core.project import Project, folder_project
+from framelabel.core.propagate import propagate, snap_to_proposals, track_box
+from framelabel.core.queues import build_index, build_queue, disagreement, uncertainty
+from framelabel.core.session import Review, Session, discover_sessions
+from framelabel.core.split import balanced_block_split, choose_negatives, frame_time, split_by_blocks, split_by_time
+from framelabel.core.uiscreen import ui_scores
+from framelabel.core.view import View
+from framelabel.core.workspace import Workspace
+
+HUD = [(0.0, 0.75, 0.07, 0.92)]
+
+
+def test_yolo_roundtrip_clips_and_drops_degenerate(tmp_path):
+    boxes = [Box(110, 50, 10, 250, cls=1), Box(-20, 900, 40, 1200), Box(5, 5, 5.5, 50)]
+    lines = yolo_lines(boxes, 1920, 1080)
+    assert len(lines) == 2  # the 0.5 px wide box is dropped
+    f = tmp_path / "a.txt"
+    f.write_text("\n".join(lines))
+    back = read_yolo(f, 1920, 1080)
+    assert back[0].cls == 1 and np.allclose(back[0].xyxy(), [10, 50, 110, 250], atol=0.01)
+    assert np.allclose([back[1].x1, back[1].y2], [0, 1080], atol=0.01)  # clipped to the image
+
+
+def test_read_proposals_filters_by_conf_and_zone(tmp_path):
+    f = tmp_path / "auto.txt"
+    f.write_text("0 0.5 0.5 0.1 0.2 0.80\n0 0.2 0.2 0.05 0.1 0.12")
+    assert [b.conf for b in read_yolo(f, 100, 100, 0.3)] == [0.8]
+    assert max_conf(f) == 0.8 and max_conf(tmp_path / "missing.txt") == 0.0
+    hud = tmp_path / "hud.txt"  # a proposal on the body-status icon is ignored
+    hud.write_text("0 0.037 0.84 0.05 0.18 0.90")
+    assert read_yolo(hud, 100, 100, 0.3, HUD) == [] and max_conf(hud, HUD) == 0.0
+    hud.write_text("0 0.037 0.84 0.05 0.18")  # but a reviewed label there is kept
+    assert len(read_yolo(hud, 100, 100, 0.3, HUD)) == 1
+
+
+def test_polygon_rows_become_boxes():
+    (row,) = parse_rows("2 0.1 0.2 0.3 0.2 0.3 0.6 0.1 0.6")
+    assert row[0] == 2 and np.allclose(row[1:5], [0.2, 0.4, 0.2, 0.4]) and row[5] is None
+
+
+def test_box_corner_edge_hit_testing():
+    big, small = Box(0, 0, 100, 100), Box(40, 40, 60, 60)
+    assert box_at([big, small], 50, 50) == 1  # the inner box wins
+    assert box_at([big, small], 10, 10) == 0 and box_at([big, small], 200, 200) == -1
+    assert corner_at(small, 61, 39, tol=3) == 1 and corner_at(small, 50, 50, tol=3) == -1
+    assert edge_at(small, 40.5, 50, tol=2) == "l" and edge_at(small, 50, 61, tol=2) == "b" and edge_at(small, 50, 50, 2) == ""
+
+
+def test_choose_negatives_prefers_hard_then_random():
+    negs = [(f"k{i}", 0.0) for i in range(20)] + [("hard1", 0.25), ("hard2", 0.2)]
+    picked = choose_negatives(negs, 6)
+    assert len(picked) == 6 and len(set(picked)) == 6 and {"hard1", "hard2"} <= set(picked)
+    assert set(choose_negatives(negs[:3], 10)) == {"k0", "k1", "k2"}
+
+
+def test_frame_time_crosses_midnight():
+    assert frame_time("session_20261008_223625_224433_188") == ("session_20261008_223625", pytest.approx(488.188))
+    assert frame_time("session_20261008_223625_000936_072")[1] == pytest.approx(86400 - 81385 + 576.072)
+    assert frame_time("session_20261008_223625_223620_000")[1] == -5.0  # clock jitter around the start is not a day
+    assert split_by_time(["b", "a", "d", "c", "e", "f", "g", "h", "i", "j"], 0.2)[1] == ["i", "j"]
+
+
+def _timed_keys():
+    return [f"s{s}_{(b * 70 + i) // 60 % 60 + 10 * 100:04d}{(b * 70 + i) % 60:02d}_000"
+            for s in (1, 2) for b in range(10) for i in range(10)]
+
+
+def test_split_by_blocks_keeps_blocks_whole_and_covers_every_session():
+    keys = _timed_keys()  # two sessions, each 10 blocks of 10 frames, blocks 60 s apart
+    train, val = split_by_blocks(keys, 0.2, seed=3)
+    assert sorted(train + val) == sorted(keys) and not set(train) & set(val) and len(val) == 40
+    for sess in ("s1", "s2"):
+        assert len([k for k in val if k.startswith(sess)]) == 20
+    blocks = {}
+    for k in keys:
+        sess, t = frame_time(k)
+        blocks.setdefault((sess, int(t) // 70), set()).add(k)
+    assert all(b <= set(val) or not b & set(val) for b in blocks.values())
+    assert split_by_blocks(keys, 0.2, seed=3) == (train, val)
+
+
+def test_split_by_blocks_matches_the_screendet_tool():
+    """Same keys and seed -> the same val split as fin_snip_helper's label_frames.py (reference values computed
+    with that implementation), so re-exporting the user's sessions keeps datasets/own's val split."""
+    train, val = split_by_blocks(_timed_keys(), 0.2, seed=3)
+    assert val[:3] == ["s1_100110_000", "s1_100111_000", "s1_100112_000"] and len(val) == 40
+
+
+def test_untimed_keys_are_split_by_position_blocks():
+    keys = [f"img_{i:04d}" for i in range(100)]
+    train, val = split_by_blocks(keys, 0.2, seed=0)
+    assert len(val) == 20 and sorted(train + val) == keys
+
+
+def test_balanced_block_split_spreads_a_clustered_class():
+    keys = [f"s1_10{(b * 65 + i) // 60:02d}{(b * 65 + i) % 60:02d}_000" for b in range(20) for i in range(5)]
+    classes = {k: [0] + ([1] if n < 20 else []) for n, k in enumerate(keys)}
+    _, val = balanced_block_split(keys, classes, 0.25, tries=50)
+    assert sum(1 in classes[k] for k in val) == 5 and len(val) == 25
+
+
+def test_review_persists_and_keeps_format(tmp_path):
+    r = Review(tmp_path / "review.json", ["enemy", "corpse"])
+    r.set("f1", "pos")
+    r.set_many({"f2": "neg", "f3": "skip"})
+    r.set("f2", None)
+    data = json.loads((tmp_path / "review.json").read_text())
+    assert data == {"version": 1, "classes": ["enemy", "corpse"], "status": {"f1": "pos", "f3": "skip"}}
+    assert Review(tmp_path / "review.json").classes == ["enemy", "corpse"]
+    with pytest.raises(ValueError):
+        r.set("f4", "weird")
+
+
+def _write_session(root, stems_status, size=(64, 36)):
+    s = root / "session_20261008_100000"
+    (s / "frames").mkdir(parents=True)
+    (s / "labels").mkdir()
+    r = Review(s / "review.json", ["enemy", "corpse"])
+    for stem, st in stems_status.items():
+        cv2.imwrite(str(s / "frames" / f"{stem}.jpg"), np.zeros((size[1], size[0], 3), np.uint8))
+        if st:
+            r.set(stem, st)
+    return s
+
+
+def test_export_builds_two_class_dataset(tmp_path):
+    s = _write_session(tmp_path, {"100000_000": "pos", "100001_000": "neg", "100002_000": "skip", "100003_000": "pos",
+                                  "100004_000": None})
+    (s / "labels/100000_000.txt").write_text("0 0.5 0.5 0.1 0.2\n1 0.2 0.2 0.1 0.1")
+    (s / "labels/100001_000.txt").write_text("")
+    (s / "labels/100003_000.txt").write_text("0 0.5 0.5 0.1 0.2")
+    out = tmp_path / "own"
+    res = export_dataset([Session.open(s)], ["enemy", "corpse"], out, neg_ratio=1.0, val_fraction=0.34, split="time")
+    train = sorted(p.name for p in (out / "images/train").iterdir())
+    val = sorted(p.name for p in (out / "images/val").iterdir())
+    pre = "session_20261008_100000_"
+    assert train == [pre + "100000_000.jpg", pre + "100001_000.jpg"] and val == [pre + "100003_000.jpg"]
+    assert (out / "labels/train" / f"{pre}100001_000.txt").read_text() == ""
+    assert "1: corpse" in (out / "data.yaml").read_text() and res.boxes["train"] == [1, 1]
+    (tmp_path / "notadataset").mkdir()
+    with pytest.raises(FileExistsError):
+        export_dataset([Session.open(s)], ["enemy", "corpse"], tmp_path / "notadataset")
+
+
+def test_session_layouts(tmp_path):
+    s = _write_session(tmp_path, {"100000_000": None})
+    assert Session.open(s).layout == "session" and [x.name for x in discover_sessions(tmp_path)] == [s.name]
+    y = tmp_path / "ds" / "images" / "train"
+    y.mkdir(parents=True)
+    cv2.imwrite(str(y / "a.jpg"), np.zeros((8, 8, 3), np.uint8))
+    ys = Session.open(y)
+    assert ys.layout == "yolo" and ys.labels_dir == tmp_path / "ds/labels/train"
+    assert ys.review_path == tmp_path / "ds/review/train.json"
+    assert [x.layout for x in discover_sessions(tmp_path / "ds")] == ["yolo"]
+    f = tmp_path / "plain"
+    f.mkdir()
+    cv2.imwrite(str(f / "b.png"), np.zeros((8, 8, 3), np.uint8))
+    assert Session.open(f).layout == "folder" and folder_project(f).class_names == ["object"]
+
+
+def test_project_roundtrip_and_class_mapping(tmp_path):
+    d = {"name": "p", "classes": ["enemy", {"name": "corpse", "color": "#00beff"}], "sources": ["data"],
+         "class_map": {"person": "enemy"}, "ignore_zones": [[0, 0.75, 0.07, 0.92]], "export": {"out": "out", "neg_ratio": 0.2}}
+    p = Project.from_dict(d, tmp_path, tmp_path / "p.yaml")
+    assert p.sources == [(tmp_path / "data").resolve()] and p.classes[1].color == "#00beff"
+    assert p.map_model_class("person", 0, 1) == 0 and p.map_model_class("corpse", 1, 2) == 1
+    assert p.map_model_class("car", 0, 1) == 0 and p.map_model_class("car", 2, 3) is None
+    p.save()
+    q = Project.load(tmp_path / "p.yaml")
+    assert q.to_dict()["sources"] == ["data"] and q.export_out == (tmp_path / "out").resolve() and q.export["neg_ratio"] == 0.2
+
+
+def test_view_fits_centred_and_zooms_around_cursor():
+    v = View(1920, 1080)
+    v.fit(2560, 1394)
+    x0, y0 = v.to_widget(0, 0)
+    x1, y1 = v.to_widget(1920, 1080)
+    assert abs(y0) < 1e-6 and abs(y1 - 1394) < 1e-6 and abs(x0 - (2560 - x1)) < 1e-6
+    before = v.to_img(700, 300)
+    v.zoom_at(700, 300, 4.0)
+    assert np.allclose(v.to_img(700, 300), before)
+    v.zoom_at(700, 300, 0.01)
+    assert v.zoom == 1.0 and np.allclose(v.to_widget(960, 540), (1280, 697))
+    v.zoom_to(100, 100, 110, 120)
+    assert v.zoom > 1 and np.allclose((v.cx, v.cy), (105, 110)) or v.cy > 110
+
+
+def test_history_undo_redo():
+    h, boxes = History(), [Box(0, 0, 1, 1)]
+    h.push(boxes)
+    boxes = boxes + [Box(2, 2, 3, 3)]
+    prev = h.undo(boxes)
+    assert len(prev) == 1 and len(h.redo(prev)) == 2 and h.redo(prev) is None
+
+
+def test_track_box_follows_a_shifted_object():
+    rng = np.random.default_rng(0)
+    a = rng.integers(0, 60, (240, 320, 3), dtype=np.uint8)
+    a[100:160, 120:150] = rng.integers(150, 255, (60, 30, 3), dtype=np.uint8)  # textured object
+    b = np.roll(a, (6, 11), axis=(0, 1))
+    moved, score = track_box(a, b, Box(120, 100, 150, 160))
+    assert score > 0.8 and np.allclose(moved.xyxy(), (131, 106, 161, 166), atol=1.0)
+    snapped = snap_to_proposals([moved], [Box(132, 105, 160, 167, conf=0.7)])
+    assert snapped[0].conf is None and np.allclose(snapped[0].xyxy(), (132, 105, 160, 167))
+    assert len(propagate(a, b, [Box(120, 100, 150, 160, cls=1)])) == 1
+
+
+def test_queue_scores():
+    assert uncertainty([0.9, 0.38], 0.15, 0.6) > 0.9 and uncertainty([0.9], 0.15, 0.6) == 0.0
+
+
+def _ui_session(tmp_path, n_game=12, n_ui=3):
+    s = tmp_path / "session_20261008_100000"
+    (s / "frames").mkdir(parents=True)
+    rng = np.random.default_rng(0)
+    for i in range(n_game + n_ui):
+        img = rng.integers(60, 120, (360, 640, 3), dtype=np.uint8)
+        if i < n_game:
+            cv2.rectangle(img, (14, 285), (30, 320), (230, 230, 230), -1)  # stand-in for the body-status icon
+            cv2.circle(img, (22, 278), 6, (230, 230, 230), -1)
+        else:
+            img[:] = 15
+            cv2.rectangle(img, (100, 50), (500, 300), (80, 80, 80), 2)
+        cv2.imwrite(str(s / "frames" / f"10{i:04d}_000.jpg"), img)
+    return s
+
+
+def test_ui_scores_flag_interface_frames(tmp_path):
+    s = Session.open(_ui_session(tmp_path))
+    frames = s.frames()
+    sc = ui_scores(s, frames, HUD[0])
+    assert all(sc[p.stem] > 0.6 for p in frames[:12]) and all(sc[p.stem] < 0.3 for p in frames[12:])
+    cached = json.loads((s.root / "ui_scores.json").read_text())
+    assert cached["_zone"] == list(HUD[0]) and ui_scores(s, frames, HUD[0]) == sc
+
+
+def _project(root):
+    return Project.from_dict({"name": "t", "classes": ["enemy", "corpse"], "sources": [str(root)],
+                              "ignore_zones": [list(HUD[0])], "ui_detect": {"zone": list(HUD[0]), "threshold": 0.3}},
+                             root)
+
+
+def test_workspace_grid_skip_marks_and_commit(tmp_path):
+    root = _ui_session(tmp_path)
+    proj = _project(tmp_path)
+    s = proj.sessions()[0]
+    frames = [p.stem for p in s.frames()]
+    Review(s.review_path).set(frames[13], "neg")  # an interface frame wrongly saved as empty earlier
+    ws = Workspace(proj, s)
+    triage = ws.queue("triage")
+    assert len(triage) == 15
+    marks = {fi.stem: m for fi in triage if (m := ws.initial_mark(fi, "triage"))}
+    assert marks == {frames[12]: "skip", frames[14]: "skip"}  # neg is not overridden
+    ui = ws.queue("ui")
+    marks = {fi.stem: m for fi in ui if (m := ws.initial_mark(fi, "ui"))}
+    assert marks == {f: "skip" for f in frames[12:]}
+    del marks[frames[14]]  # user: this one is fine as empty
+    ws.commit_page([fi.stem for fi in ui], marks)
+    st = ws.review.status
+    assert st[frames[12]] == st[frames[13]] == "skip" and st[frames[14]] == "neg"
+    ws.commit_page(frames[:2], {frames[0]: "people"})
+    assert ws.review.get(frames[0]) == "todo" and ws.review.get(frames[1]) == "neg"
+    assert (s.labels_dir / f"{frames[1]}.txt").read_text() == "" and not (s.labels_dir / f"{frames[12]}.txt").exists()
+    assert root.name == s.name
+
+
+def test_workspace_edit_save_and_queues(tmp_path):
+    root = _ui_session(tmp_path, n_game=6, n_ui=0)
+    proj = _project(tmp_path)
+    s = proj.sessions()[0]
+    stems = [p.stem for p in s.frames()]
+    s.auto_dir.mkdir()
+    (s.auto_path(stems[0])).write_text("0 0.5 0.5 0.1 0.2 0.85\n0 0.3 0.3 0.05 0.02 0.35\n0 0.037 0.84 0.05 0.18 0.9")
+    (s.auto_path(stems[1])).write_text("0 0.5 0.5 0.1 0.2 0.12")
+    ws = Workspace(proj, s, conf=0.3)
+    assert [f.stem for f in ws.queue("edit")] == [stems[0]]
+    assert [f.stem for f in ws.queue("uncertain")] == [stems[0]]  # 0.35 is in the uncertain band
+    assert [f.stem for f in ws.queue("small")] == [stems[0]]  # a 0.02-high proposal; frame 1 has only a big one
+    boxes, weak = ws.load_boxes(s.frames()[0], 640, 360)
+    assert [b.conf for b in boxes] == [0.85, 0.35] and weak == []  # the HUD proposal is ignored
+    assert ws.save(s.frames()[0], boxes[:1], 640, 360) == "pos"
+    assert ws.review.get(stems[0]) == "pos" and ws.index[0].label_cls == [0]
+    boxes, _ = ws.load_boxes(s.frames()[0], 640, 360)
+    assert len(boxes) == 1 and boxes[0].conf is None  # reviewed labels are shown now
+    assert disagreement(ws.index[0], 0.5) == 0.0
+    ws.save(s.frames()[0], [], 640, 360)  # labeled empty although the model is confident -> disagreement
+    assert ws.review.get(stems[0]) == "neg" and [f.stem for f in ws.queue("disagree")] == [stems[0]]
+    assert ws.save(s.frames()[2], [], 640, 360, "skip") == "skip" and not s.label_path(stems[2]).exists()
+    assert root.exists()
+
+
+def test_build_index_reads_every_frame(tmp_path):
+    _ui_session(tmp_path, n_game=3, n_ui=0)
+    s = _project(tmp_path).sessions()[0]
+    idx = build_index(s, s.review())
+    assert len(idx) == 3 and build_queue(idx, "all") == idx and build_queue(idx, "class:0") == []

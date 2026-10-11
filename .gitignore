@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+models/
+train_runs/
+datasets/
+runs/
+projects/
+*.log
