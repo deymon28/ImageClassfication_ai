@@ -711,7 +711,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("grid", f"{cols}x{rows}")
         first = self.grid.page * self.grid.per_page
         self.grid.cols, self.grid.rows = cols, rows
-        self.grid.cache.clear()
+        self.grid.clear_cache()
         self.grid.set_page(first // self.grid.per_page)
 
     def update_status(self) -> None:
@@ -1130,6 +1130,7 @@ class MainWindow(QMainWindow):
         self.shutdown_sam()
         self.settings.setValue("geometry", self.saveGeometry())
         self.pool.shutdown(wait=False, cancel_futures=True)
+        self.grid.shutdown()
         super().closeEvent(e)
 
 

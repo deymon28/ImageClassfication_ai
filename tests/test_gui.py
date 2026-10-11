@@ -396,3 +396,42 @@ def test_editor_prefetches_around_the_current_frame(app, project):
     img, qimg = w.canvas.img, w.canvas.qimg
     assert img.shape[:2] == (180, 320) and qimg.width() == 320 and w.cur_path.stem == "100002_000"
     w.close()
+
+
+def test_grid_loads_tiles_in_the_background_and_debounces_resize(app, tmp_path):
+    from framelabel.core.queues import FrameInfo
+    from framelabel.gui.grid import Grid
+
+    items = []
+    for i in range(12):
+        p = tmp_path / f"{i:06d}.jpg"
+        cv2.imwrite(str(p), np.full((90, 160, 3), 20 * i, np.uint8))
+        items.append(FrameInfo(p))
+    g = Grid()
+    g.cols, g.rows = 2, 2
+    g.resize(400, 300)
+    g.show()
+    app.processEvents()
+    wait_until(app, lambda: not g.resizing)
+    g.set_items(items, 0)
+    submits = []
+    real = g.pool.submit
+    g.pool.submit = lambda *a, **k: (submits.append(a[1:]), real(*a, **k))[1]
+    g.repaint()  # asks for the page and its neighbours
+    first = len(submits)
+    assert 1 <= first <= 2  # page 0 and page 1 (there is no page -1)
+    wait_until(app, lambda: g.tiles(*g.layout_now()[2:]) is not None)
+    assert len(g.tiles(*g.layout_now()[2:])) == 4
+    n = len(submits)
+    for width in range(400, 500, 10):  # a resize drag: nothing is reloaded until it settles
+        g.resize(width, 300)
+        g.repaint()
+    assert len(submits) == n and g.resizing
+    wait_until(app, lambda: not g.resizing)
+    g.repaint()
+    assert n < len(submits) <= n + 3
+    g.page = 1
+    g.set_page(1)
+    g.repaint()
+    assert {k[0] for k in g.cache} <= {0, 1, 2}
+    g.shutdown()

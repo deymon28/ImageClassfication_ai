@@ -17,6 +17,7 @@ from framelabel.core.view import View
 from .canvas import to_qimage
 
 GAP = 6
+RESIZE_SETTLE_MS = 150  # while the window is being resized the tiles of the old size are stretched instead of reloaded
 
 
 def grid_layout(aw: int, ah: int, cols: int, rows: int, aspect: tuple[int, int]) -> tuple[int, int, int, int]:
@@ -36,6 +37,7 @@ def grid_layout(aw: int, ah: int, cols: int, rows: int, aspect: tuple[int, int])
 class Grid(QWidget):
     marks_changed = pyqtSignal()
     page_changed = pyqtSignal()
+    tile_ready = pyqtSignal()  # a tile page finished loading in the pool (emitted from the pool thread)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -50,6 +52,12 @@ class Grid(QWidget):
         self.aspect = (9, 16)
         self.pool = ThreadPoolExecutor(2)
         self.cache: dict[tuple, Future] = {}
+        self.last_tiles: tuple[int, list[QImage]] | None = None  # (page, tiles) shown last, for stretching on resize
+        self.resizing = False
+        self.resize_timer = QTimer(self)
+        self.resize_timer.setSingleShot(True)
+        self.resize_timer.timeout.connect(self.end_resize)
+        self.tile_ready.connect(self.update)
         self.hover = -1
         self.preview: FrameInfo | None = None
         self.preview_img: np.ndarray | None = None
@@ -73,9 +81,19 @@ class Grid(QWidget):
         page = self.page if page is None else page
         return self.items[page * self.per_page:(page + 1) * self.per_page]
 
+    def clear_cache(self) -> None:
+        for f in self.cache.values():
+            f.cancel()  # a no-op for loads already running
+        self.cache.clear()
+        self.last_tiles = None
+
+    def shutdown(self) -> None:
+        self.clear_cache()
+        self.pool.shutdown(wait=False, cancel_futures=True)
+
     def set_items(self, items: list[FrameInfo], page: int = 0, initial_mark=None) -> None:
         self.items = items
-        self.cache.clear()
+        self.clear_cache()
         if items:
             img = cv2.imread(str(items[0].path), cv2.IMREAD_REDUCED_COLOR_4)
             if img is not None:
@@ -108,18 +126,36 @@ class Grid(QWidget):
             out.append(to_qimage(cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)))
         return out
 
+    def _notify(self, _f) -> None:
+        try:
+            self.tile_ready.emit()
+        except RuntimeError:  # the widget was deleted while a load was finishing
+            pass
+
     def tiles(self, tw: int, th: int) -> list[QImage] | None:
+        """The current page's tiles at this size, or None while they load (a repaint follows when they are ready)."""
         for key in list(self.cache):
             if abs(key[0] - self.page) > 2 or key[1:] != (tw, th):
-                del self.cache[key]
-        for p in (self.page, self.page + 1):
-            if p < self.n_pages and (p, tw, th) not in self.cache:
-                self.cache[(p, tw, th)] = self.pool.submit(self._load, p, tw, th)
+                self.cache.pop(key).cancel()
+        for p in (self.page, self.page + 1, self.page - 1):  # the current page first
+            if 0 <= p < self.n_pages and (p, tw, th) not in self.cache:
+                f = self.cache[(p, tw, th)] = self.pool.submit(self._load, p, tw, th)
+                f.add_done_callback(self._notify)
         f = self.cache[(self.page, tw, th)]
-        if not f.done():
-            QTimer.singleShot(30, self.update)
+        if not f.done() or f.cancelled():
             return None
-        return f.result()
+        tiles = f.result()
+        self.last_tiles = (self.page, tiles)
+        return tiles
+
+    def resizeEvent(self, e) -> None:
+        self.resizing = True
+        self.resize_timer.start(RESIZE_SETTLE_MS)
+        super().resizeEvent(e)
+
+    def end_resize(self) -> None:
+        self.resizing = False
+        self.update()
 
     def layout_now(self) -> tuple[int, int, int, int]:
         return grid_layout(self.width(), self.height(), self.cols, self.rows, self.aspect)
@@ -146,7 +182,10 @@ class Grid(QWidget):
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.message or "No frames in this view")
             return
         x0, y0, tw, th = self.layout_now()
-        tiles = self.tiles(tw, th)
+        if self.resizing:  # stretch the last tiles of this page; new sizes are requested once the resize settles
+            tiles = self.last_tiles[1] if self.last_tiles and self.last_tiles[0] == self.page else None
+        else:
+            tiles = self.tiles(tw, th)
         font = QFont(self.font())
         font.setPointSizeF(9)
         p.setFont(font)
