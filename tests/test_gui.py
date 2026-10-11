@@ -319,3 +319,29 @@ def test_process_job_cancel_file_stops_the_child(app):
     job.cancel()
     wait_until(app, lambda: got)
     assert got == [{"cancelled": True}] and not job.cancel_file.exists()
+
+
+def test_export_dialog_runs_as_a_background_job(app, project, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    from framelabel.gui.app import MainWindow
+    from framelabel.gui.dialogs import ExportDialog
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    for i in (6, 7):  # two labeled frames
+        w.ws.save(s / "frames" / f"1000{i:02d}_000.jpg", [__import__("framelabel.core.boxes", fromlist=["Box"]).Box(5, 5, 60, 90)],
+                  320, 180)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: shown.append(a[2]))
+    dlg = ExportDialog(w.project, w.sessions, w)
+    out = path.parent / "exported"
+    dlg.out.setText(str(out))
+    dlg.accept()
+    assert dlg.out_path == out and not out.exists()  # accept() only validates
+    w.run_job(dlg.make_job(), "Exporting", lambda res: shown.append(res.summary(w.project.class_names)))
+    wait_until(app, lambda: shown)
+    assert w.job is None and (out / "data.yaml").exists() and "positives 2" in shown[0]
+    w.close()

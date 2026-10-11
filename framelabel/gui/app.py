@@ -1085,9 +1085,8 @@ class MainWindow(QMainWindow):
         self.commit_current()
         dlg = ExportDialog(self.project, self.sessions, self)
         if dlg.exec():
-            res = dlg.result
-            if res is not None:
-                QMessageBox.information(self, "Export", res.summary(self.project.class_names))
+            summary = self.project.class_names
+            self.run_job(dlg.make_job(), "Exporting", lambda res: QMessageBox.information(self, "Export", res.summary(summary)))
 
     def retrain_dialog(self) -> None:
         from .dialogs import RetrainDialog

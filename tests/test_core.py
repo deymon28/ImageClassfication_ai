@@ -151,6 +151,23 @@ def test_export_builds_two_class_dataset(tmp_path):
         export_dataset([Session.open(s)], ["enemy", "corpse"], tmp_path / "notadataset")
 
 
+def test_export_cancel_keeps_the_previous_dataset(tmp_path):
+    from framelabel.core.index_cache import Cancelled
+
+    s = _write_session(tmp_path, {"100000_000": "pos", "100001_000": "neg", "100003_000": "pos"})
+    (s / "labels/100000_000.txt").write_text("0 0.5 0.5 0.1 0.2")
+    (s / "labels/100001_000.txt").write_text("")
+    (s / "labels/100003_000.txt").write_text("0 0.5 0.5 0.1 0.2")
+    out, seen = tmp_path / "own", []
+    export_dataset([Session.open(s)], ["enemy", "corpse"], out, neg_ratio=1.0, split="time", progress=lambda *a: seen.append(a))
+    assert seen and seen[-1][:2] == (3, 3)
+    before = sorted(str(p.relative_to(out)) for p in out.rglob("*"))
+    with pytest.raises(Cancelled):
+        export_dataset([Session.open(s)], ["enemy", "corpse"], out, neg_ratio=1.0, split="time", cancelled=lambda: True)
+    assert sorted(str(p.relative_to(out)) for p in out.rglob("*")) == before
+    assert not (tmp_path / "own.partial").exists()
+
+
 def test_session_layouts(tmp_path):
     s = _write_session(tmp_path, {"100000_000": None})
     assert Session.open(s).layout == "session" and [x.name for x in discover_sessions(tmp_path)] == [s.name]

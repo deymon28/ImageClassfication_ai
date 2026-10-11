@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .boxes import parse_rows
+from .index_cache import Cancelled
 from .split import balanced_block_split, choose_negatives, split_by_time
 from .session import Session
 
@@ -45,7 +46,7 @@ class ExportResult:
 
 def export_dataset(sessions: list[Session], classes: list[str], out: Path, neg_ratio: float = 0.15,
                    val_fraction: float = 0.15, seed: int = 0, split: str = "blocks", block_s: float = 120.0,
-                   ignore_zones=(), progress=None) -> ExportResult:
+                   ignore_zones=(), progress=None, cancelled=None) -> ExportResult:
     pos, negs, src = [], [], {}
     for s in sessions:
         review = s.review()
@@ -69,27 +70,41 @@ def export_dataset(sessions: list[Session], classes: list[str], out: Path, neg_r
     else:
         train, val = split_by_time(pos + chosen, val_fraction)
     out = Path(out)
-    if out.exists():
-        if not (out / "data.yaml").exists():
-            raise FileExistsError(f"{out} exists and is not an exported dataset; refusing to overwrite it")
-        shutil.rmtree(out)
+    if out.exists() and not (out / "data.yaml").exists():
+        raise FileExistsError(f"{out} exists and is not an exported dataset; refusing to overwrite it")
+    # everything is built next to the target and swapped in at the end: a cancelled or failed export keeps the old one
+    tmp = out.with_name(out.name + ".partial")
+    if tmp.exists():
+        if any(tmp.iterdir()) and not (tmp / "data.yaml").exists() and not (tmp / "images").exists():
+            raise FileExistsError(f"{tmp} exists and is not a partial export; remove it first")
+        shutil.rmtree(tmp)
     counts = {"train": [0] * len(classes), "val": [0] * len(classes)}
     total, done = len(train) + len(val), 0
-    for name, keys in (("train", train), ("val", val)):
-        (out / "images" / name).mkdir(parents=True)
-        (out / "labels" / name).mkdir(parents=True)
-        for key in keys:
-            img, lab = src[key]
-            shutil.copy2(img, out / "images" / name / f"{key}{img.suffix}")
-            rows = lab.read_text(encoding="utf-8") if lab.exists() else ""
-            (out / "labels" / name / f"{key}.txt").write_text(rows, encoding="utf-8")
-            for cls, *_ in parse_rows(rows):
-                if 0 <= cls < len(classes):
-                    counts[name][cls] += 1
-            done += 1
-            if progress and done % 50 == 0:
-                progress(done, total)
-    names = "\n".join(f"  {i}: {n}" for i, n in enumerate(classes))
-    (out / "data.yaml").write_text(f"path: {out.as_posix()}\ntrain: images/train\nval: images/val\nnames:\n{names}\n",
-                                   encoding="utf-8")
+    try:
+        for name, keys in (("train", train), ("val", val)):
+            (tmp / "images" / name).mkdir(parents=True)
+            (tmp / "labels" / name).mkdir(parents=True)
+            for key in keys:
+                img, lab = src[key]
+                shutil.copy2(img, tmp / "images" / name / f"{key}{img.suffix}")
+                rows = lab.read_text(encoding="utf-8") if lab.exists() else ""
+                (tmp / "labels" / name / f"{key}.txt").write_text(rows, encoding="utf-8")
+                for cls, *_ in parse_rows(rows):
+                    if 0 <= cls < len(classes):
+                        counts[name][cls] += 1
+                done += 1
+                if done % 50 == 0 or done == total:
+                    if cancelled and cancelled():
+                        raise Cancelled()
+                    if progress:
+                        progress(done, total, "exporting images")
+        names = "\n".join(f"  {i}: {n}" for i, n in enumerate(classes))
+        (tmp / "data.yaml").write_text(f"path: {out.as_posix()}\ntrain: images/train\nval: images/val\nnames:\n{names}\n",
+                                       encoding="utf-8")
+        if out.exists():
+            shutil.rmtree(out)
+        tmp.rename(out)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
     return ExportResult(out, len(pos), len(chosen), len(negs), train, val, counts)

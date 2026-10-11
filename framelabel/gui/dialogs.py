@@ -14,6 +14,7 @@ from framelabel.core.project import PALETTE, ClassDef, Project
 from framelabel.core.session import Session
 from framelabel.ml.models import scan_models
 from .keys import DEFAULT_KEYMAP, Keymap
+from .workers import Job, start_job, stop_jobs
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -100,6 +101,14 @@ class PrelabelDialog(QDialog):
         return cfg, sessions, self.redo.isChecked()
 
 
+def export_with(classes: list[str], zones, out: Path, p: dict, progress=None, cancelled=None):
+    """core.export.export_dataset with the dialog's settings (plain values: safe in a worker thread)."""
+    from framelabel.core.export import export_dataset
+
+    return export_dataset(p["sessions"], classes, out, p["neg"], p["val"], p["seed"], p["split"], p["block"], zones,
+                          progress, cancelled)
+
+
 class ExportDialog(QDialog):
     def __init__(self, project: Project, sessions: list[Session], parent=None):
         super().__init__(parent)
@@ -146,7 +155,8 @@ class ExportDialog(QDialog):
         form.addRow("Block length, s", self.block)
         form.addRow("Seed", self.seed)
         lay.addLayout(form)
-        lay.addWidget(buttons(self, "Export"))
+        self.bb = buttons(self, "Export")
+        lay.addWidget(self.bb)
 
     def pick_out(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "Output folder", self.out.text())
@@ -156,25 +166,34 @@ class ExportDialog(QDialog):
     def chosen(self) -> list[Session]:
         return [s for i, s in enumerate(self.sessions) if self.list.item(i).checkState() == Qt.CheckState.Checked]
 
-    def run_export(self, out: Path):
-        from framelabel.core.export import export_dataset
+    def read_params(self) -> dict:
+        """The export settings as plain values, read on the GUI thread before the job starts."""
+        return {"sessions": self.chosen(), "neg": self.neg.value(), "val": self.val.value(), "seed": self.seed.value(),
+                "split": self.split.currentData(), "block": self.block.value()}
 
-        return export_dataset(self.chosen(), self.project.class_names, out, self.neg.value(), self.val.value(),
-                              self.seed.value(), self.split.currentData(), self.block.value(), self.project.ignore_zones)
+    def export_job(self, out: Path, p: dict) -> Job:
+        """A job that exports with the settings in `p`; it holds plain values only, never a widget."""
+        classes, zones = list(self.project.class_names), list(self.project.ignore_zones)
+        return Job(lambda progress, cancelled: export_with(classes, zones, out, p, progress, cancelled))
 
-    def accept(self) -> None:
+    def validate_out(self, title: str = "Export", ask_replace: bool = True) -> Path | None:
         out = Path(self.out.text())
         if out.exists() and not (out / "data.yaml").exists():
-            QMessageBox.critical(self, "Export", f"{out} exists and is not an exported dataset.")
-            return
-        if out.exists() and QMessageBox.question(self, "Export", f"Replace {out}?") != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            self.result = self.run_export(out)
-        except (ValueError, OSError) as e:
-            QMessageBox.critical(self, "Export", str(e))
-            return
-        super().accept()
+            QMessageBox.critical(self, title, f"{out} exists and is not an exported dataset.")
+            return None
+        if ask_replace and out.exists() and QMessageBox.question(self, title, f"Replace {out}?") != QMessageBox.StandardButton.Yes:
+            return None
+        return out
+
+    def accept(self) -> None:
+        """Validate only: the export itself runs as a background job (make_job) started by the caller."""
+        self.out_path = self.validate_out()
+        if self.out_path is not None:
+            self.params = self.read_params()
+            super().accept()
+
+    def make_job(self) -> Job:
+        return self.export_job(self.out_path, self.params)
 
 
 class RetrainDialog(ExportDialog):
@@ -184,6 +203,7 @@ class RetrainDialog(ExportDialog):
         super().__init__(project, sessions, parent)
         self.setWindowTitle("Retrain a labeler on my labels")
         self.proc: QProcess | None = None
+        self.running_export: Job | None = None
         self.out.setText(str(ROOT / "datasets" / f"{project.name.replace(' ', '_')}_retrain"))
         lay = self.layout()
         form = QFormLayout()
@@ -217,6 +237,7 @@ class RetrainDialog(ExportDialog):
         lay.insertLayout(lay.count() - 1, form)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(5000)
         self.log.setMinimumHeight(220)
         lay.insertWidget(lay.count() - 1, self.log)
         self.resize(820, 820)
@@ -226,18 +247,44 @@ class RetrainDialog(ExportDialog):
             QMessageBox.information(self, "Retrain", "Training is running; close this window to keep it running in the "
                                     "background log, or wait.")
             return
+        if self.running_export is not None:
+            return
         if not self.parent().gpu_preflight():
             return
-        out = Path(self.out.text())
-        if out.exists() and not (out / "data.yaml").exists():
-            QMessageBox.critical(self, "Retrain", f"{out} exists and is not an exported dataset.")
+        out = self.validate_out("Retrain", ask_replace=False)
+        if out is None:
             return
-        try:
-            res = self.run_export(out)
-        except (ValueError, OSError) as e:
-            QMessageBox.critical(self, "Retrain", str(e))
-            return
+        self.params = self.read_params()
+        self.bb.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
+        self.log.appendPlainText("Exporting the labeled frames...")
+        job = self.export_job(out, self.params)
+        self.running_export, self.export_out = job, out
+        job.progress.connect(self.on_export_progress)
+        job.finished.connect(self.on_exported)
+        job.failed.connect(self.on_export_failed)
+        job.aborted.connect(self.on_export_aborted)
+        start_job(self, job)
+
+    def on_export_progress(self, i: int, n: int, _msg: str) -> None:
+        if i == n or i % 500 == 0:
+            self.log.appendPlainText(f"exported {i}/{n}")
+
+    def on_exported(self, res) -> None:
+        self.running_export = None
         self.log.appendPlainText(res.summary(self.project.class_names))
+        self.start_training(self.export_out)
+
+    def on_export_failed(self, msg: str) -> None:
+        self.running_export = None
+        self.bb.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
+        QMessageBox.critical(self, "Retrain", msg)
+
+    def on_export_aborted(self) -> None:
+        self.running_export = None
+        self.bb.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
+        self.log.appendPlainText("export cancelled")
+
+    def start_training(self, out: Path) -> None:
         args = ["-m", "framelabel.ml.train", "--data", str(out / "data.yaml"), "--model", self.base.currentData(),
                 "--name", self.name.text(), "--epochs", str(self.epochs.value()), "--imgsz", self.imgsz.currentText(),
                 "--batch", str(self.bs.value()), "--freeze", str(self.freeze.value()),
@@ -263,6 +310,10 @@ class RetrainDialog(ExportDialog):
         self.proc = None
 
     def reject(self) -> None:
+        if self.running_export is not None:
+            self.running_export.cancel()
+            stop_jobs(self)
+            self.running_export = None
         if self.proc is not None and QMessageBox.question(self, "Retrain", "Stop the training?") == QMessageBox.StandardButton.Yes:
             self.proc.kill()
             self.proc.waitForFinished(5000)
