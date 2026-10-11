@@ -28,7 +28,7 @@ def gpu_compute_processes(exclude_self: bool = True) -> list[tuple[int, str, str
     """(pid, name, used memory) of processes doing CUDA compute, from nvidia-smi ([] if it is unavailable)."""
     try:
         out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader"],
-                             capture_output=True, text=True, timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                             capture_output=True, text=True, timeout=3, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return []
     rows = []

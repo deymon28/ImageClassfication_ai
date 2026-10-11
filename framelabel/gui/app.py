@@ -85,6 +85,8 @@ class MainWindow(QMainWindow):
         self.sam_seq = 0
         self.sam_pending: dict[int, dict] = {}
         self.job = None
+        self.job_title = ""
+        self.closing = False
         self.loader: Job | None = None  # the session being loaded in the background
         self.reloader: Job | None = None  # proposals / new frames being re-read in the background
         self.setWindowTitle("framelabel")
@@ -1051,17 +1053,22 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"{title}: {i}/{n}  {msg}")
 
         def end():
-            self.job = None
+            job, self.job = self.job, None
             self.progress.setVisible(False)
             self.cancel_btn.setVisible(False)
+            if isinstance(job, ProcessJob):  # we are inside its signal: let the event loop delete it afterwards
+                job.setParent(self)
+                job.deleteLater()
 
         def finish(result):
             end()
-            done(result)
+            if not self.closing:
+                done(result)
 
         def fail(msg):
             end()
-            QMessageBox.critical(self, title, msg)
+            if not self.closing:
+                QMessageBox.critical(self, title, msg)
 
         def abort():
             end()
@@ -1123,6 +1130,18 @@ class MainWindow(QMainWindow):
             self.update_help()
 
     def closeEvent(self, e) -> None:
+        if self.job is not None:
+            r = QMessageBox.question(self, "Quit", f"{self.job_title} is still running. Stop it and quit?")
+            if r != QMessageBox.StandardButton.Yes:
+                e.ignore()
+                return
+            self.closing = True
+            self.job.cancel()
+            proc = getattr(self.job, "proc", None)  # a child process: give it time to stop after its batch
+            if proc is not None and not proc.waitForFinished(10000):
+                proc.kill()
+                proc.waitForFinished(5000)
+        self.closing = True
         self.commit_current()
         self.cancel_loader()
         self.reloader = None

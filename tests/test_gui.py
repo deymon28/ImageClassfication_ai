@@ -435,3 +435,54 @@ def test_grid_loads_tiles_in_the_background_and_debounces_resize(app, tmp_path):
     g.repaint()
     assert {k[0] for k in g.cache} <= {0, 1, 2}
     g.shutdown()
+
+
+def test_process_job_through_run_job_cleans_up(app, project):
+    import sys
+
+    from framelabel.gui.app import MainWindow
+    from framelabel.gui.process_job import ProcessJob
+
+    path, _ = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    got = []
+    code = "print('@@progress {\"done\": 1, \"total\": 2, \"msg\": \"x\"}', flush=True); print('@@result {\"ok\": 1}', flush=True)"
+    w.run_job(ProcessJob(["-c", code], sys.executable), "Fake", got.append)
+    assert w.job is not None and w.cancel_btn.isVisibleTo(w)
+    wait_until(app, lambda: got)
+    assert got == [{"ok": 1}] and w.job is None and not w.cancel_btn.isVisibleTo(w)
+    for _ in range(20):  # the deferred delete of the finished job
+        app.processEvents()
+    w.close()
+
+
+def test_closing_with_a_running_job_stops_it(app, project, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    from framelabel.core.index_cache import Cancelled
+    from framelabel.gui.app import MainWindow
+    from framelabel.gui.workers import Job
+
+    path, _ = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    started = []
+
+    def long_job(progress, cancelled):
+        started.append(1)
+        while True:
+            if cancelled():
+                raise Cancelled()
+            time.sleep(0.01)
+
+    answers = iter([QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes])
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: next(answers))
+    w.run_job(Job(long_job), "Long", lambda r: None)
+    wait_until(app, lambda: started)
+    w.show()
+    assert w.close() is False and w.job is not None  # "No": keeps running
+    assert w.close() is True  # "Yes": cancels and waits for the thread
+    assert not w._reaper.jobs or all(not th.isRunning() for th, _ in w._reaper.jobs)
