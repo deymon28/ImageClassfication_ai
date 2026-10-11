@@ -14,7 +14,7 @@ import cv2
 from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
-                             QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+                             QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow,
                              QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QStackedWidget, QTableWidget,
                              QVBoxLayout, QWidget)
 
@@ -26,6 +26,7 @@ from framelabel.core.session import Session
 from framelabel.core.workspace import Workspace
 from framelabel.perf import setup_logging, timed
 from .canvas import Canvas
+from .frame_list import FrameListModel
 from .grid import Grid
 from .keys import Keymap, key_name
 from .process_job import ProcessJob
@@ -39,7 +40,6 @@ EDIT_QUEUES = [("edit", "To review (proposals / marked)"), ("uncertain", "Uncert
                ("skip", "Skipped"), ("all", "All frames")]
 GRID_QUEUES = [("triage", "Model found nothing"), ("ui", "Suspected interface screens"), ("neg", "Saved as empty"),
                ("skip", "Skipped"), ("unreviewed", "Not reviewed"), ("all", "All frames")]
-STATUS_COLORS = {"pos": "#5fd35f", "neg": "#8a8a8a", "skip": "#c08040", "todo": "#ffd000", None: "#ffffff"}
 
 
 def color_icon(color: str, size: int = 12) -> QIcon:
@@ -124,10 +124,13 @@ class MainWindow(QMainWindow):
         self.queue_box.currentIndexChanged.connect(self.on_queue_changed)
         self.mode_btn = QPushButton("Grid / Editor  (Tab)")
         self.mode_btn.clicked.connect(self.switch_mode)
-        self.frame_list = QListWidget()
+        self.frame_model = FrameListModel(self)
+        self.frame_list = QListView()
+        self.frame_list.setModel(self.frame_model)
         self.frame_list.setUniformItemSizes(True)
-        self.frame_list.itemActivated.connect(self.on_frame_clicked)
-        self.frame_list.itemClicked.connect(self.on_frame_clicked)
+        self.frame_list.setEditTriggers(QListView.EditTrigger.NoEditTriggers)
+        self.frame_list.activated.connect(self.on_frame_clicked)
+        self.frame_list.clicked.connect(self.on_frame_clicked)
         self.counts_label = QLabel()
         self.counts_label.setWordWrap(True)
         for w in (QLabel("Session"), self.session_box, QLabel("Queue"), self.queue_box, self.mode_btn, self.frame_list,
@@ -397,7 +400,7 @@ class MainWindow(QMainWindow):
         self.cancel_loader()
         self.reloader = None
         self.ws, self.queue, self.cur_path = None, [], None  # handlers return early while there is no workspace
-        self.frame_list.clear()
+        self.frame_model.set_queue([])
         self.grid.message = f"Loading {s.name}..."
         self.grid.set_items([], 0)
         self.canvas.img = None
@@ -490,7 +493,7 @@ class MainWindow(QMainWindow):
         self.commit_current()
         name = self.queue_box.currentData()
         self.queue = self.ws.queue(name)
-        with timed("fill_frame_list", 50):
+        with timed("fill_frame_list", 20):
             self.fill_frame_list()
         pos = next((i for i, f in enumerate(self.queue) if f.stem == keep_stem), None) if keep_stem else None
         if self.mode == "grid":
@@ -556,28 +559,20 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Reload failed: {msg}")
 
     def fill_frame_list(self) -> None:
-        self.frame_list.blockSignals(True)
-        self.frame_list.clear()
-        for fi in self.queue:
-            it = QListWidgetItem(self.frame_label(fi))
-            it.setForeground(QColor(STATUS_COLORS.get(fi.status, "#ffffff")))
-            self.frame_list.addItem(it)
-        self.frame_list.blockSignals(False)
-
-    def frame_label(self, fi: FrameInfo) -> str:
-        tag = {"pos": "labeled", "neg": "empty", "skip": "skip", "todo": "queued"}.get(fi.status or "", "new")
-        extra = f"  {fi.max_conf:.2f}" if fi.max_conf else ""
-        return f"{fi.stem}  [{tag}]{extra}"
+        self.frame_model.set_queue(self.queue)
 
     def update_list_item(self, i: int) -> None:
-        if 0 <= i < self.frame_list.count():
-            fi = self.queue[i]
-            it = self.frame_list.item(i)
-            it.setText(self.frame_label(fi))
-            it.setForeground(QColor(STATUS_COLORS.get(fi.status, "#ffffff")))
+        self.frame_model.row_changed(i)
 
-    def on_frame_clicked(self, item: QListWidgetItem) -> None:
-        row = self.frame_list.row(item)
+    def select_frame_row(self, row: int) -> None:
+        """Highlight a row of the frame list without triggering anything."""
+        if 0 <= row < self.frame_model.rowCount():
+            ix = self.frame_model.index(row)
+            self.frame_list.setCurrentIndex(ix)
+            self.frame_list.scrollTo(ix)
+
+    def on_frame_clicked(self, index) -> None:
+        row = index.row()
         if self.mode == "grid":
             self.grid.set_page(row // self.grid.per_page)
         else:
@@ -616,9 +611,7 @@ class MainWindow(QMainWindow):
         if carried is not None and not boxes and fi.status in (None, "todo"):
             self.canvas.replace_boxes(carried)
             self.canvas.message = "boxes carried over from the previous frame: check them"
-        self.frame_list.blockSignals(True)
-        self.frame_list.setCurrentRow(self.idx)
-        self.frame_list.blockSignals(False)
+        self.select_frame_row(self.idx)
         self.fill_box_table()
         self.update_status()
 
@@ -868,7 +861,7 @@ class MainWindow(QMainWindow):
             g.set_page(g.page - 1)
         elif action == "next_page":
             g.set_page(g.page + 1)
-        self.frame_list.setCurrentRow(min(g.page * g.per_page, max(0, len(self.queue) - 1)))
+        self.select_frame_row(min(g.page * g.per_page, max(0, len(self.queue) - 1)))
 
     def from_previous(self, track: bool) -> None:
         """Boxes of the previous frame in time order (not the queue): copied, or tracked onto this frame."""

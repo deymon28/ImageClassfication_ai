@@ -345,3 +345,24 @@ def test_export_dialog_runs_as_a_background_job(app, project, monkeypatch):
     wait_until(app, lambda: shown)
     assert w.job is None and (out / "data.yaml").exists() and "positives 2" in shown[0]
     w.close()
+
+
+def test_frame_list_model_follows_the_queue(app, project):
+    from PyQt6.QtCore import Qt
+
+    from framelabel.gui.app import MainWindow
+
+    path, _ = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    m = w.frame_model
+    assert m.rowCount() == len(w.queue) == 6
+    assert m.data(m.index(0)).endswith("[new]")
+    w.set_mode("edit", queue="all")
+    assert m.rowCount() == 8
+    w.go(2)
+    w.do("empty_next")  # the frame becomes empty, the list row follows
+    assert "[empty]" in m.data(m.index(2)) and m.data(m.index(2), Qt.ItemDataRole.ForegroundRole).name() == "#8a8a8a"
+    assert w.frame_list.currentIndex().row() == 3  # the editor moved on
+    w.close()
