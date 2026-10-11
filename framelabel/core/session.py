@@ -116,6 +116,11 @@ class Session:
             return {}
 
 
+def session_overview(session: Session) -> dict[str, int]:
+    """Frame count and review counts (pos / neg / skip / todo) of a session, without building its index."""
+    return {"frames": len(session.frames()), **session.review().counts()}
+
+
 def is_session_dir(path: Path) -> bool:
     return (path / "frames").is_dir() or (path.is_dir() and any(p.suffix.lower() in IMG_EXT for p in path.iterdir()))
 

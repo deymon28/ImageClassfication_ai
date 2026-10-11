@@ -23,7 +23,7 @@ from framelabel.core.boxes import Box
 from framelabel.core.project import Project, folder_project
 from framelabel.core.propagate import propagate
 from framelabel.core.queues import FrameInfo
-from framelabel.core.session import Session
+from framelabel.core.session import Session, session_overview
 from framelabel.core.workspace import Workspace
 from framelabel.perf import setup_logging, timed
 from .canvas import Canvas, to_qimage
@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
         self.closing = False
         self.loader: Job | None = None  # the session being loaded in the background
         self.reloader: Job | None = None  # proposals / new frames being re-read in the background
+        self.overview_job: Job | None = None  # frame and review counts for the session box
         self.setWindowTitle("framelabel")
         self.resize(1600, 950)
         self.build_ui()
@@ -393,10 +394,29 @@ class MainWindow(QMainWindow):
             self.canvas.message = "No frames found in the project's sources"
             self.canvas.update()
             return
+        self.start_overview()
         last = self.settings.value(f"session/{proj.path or target}", "")
         i = next((k for k, s in enumerate(self.sessions) if s.name == last), 0)
         self.session_box.setCurrentIndex(i)
         self.on_session_changed(i)
+
+    def start_overview(self) -> None:
+        """Fill the session box with frame / reviewed counts (a listing per session: done in a thread)."""
+        sessions = list(self.sessions)
+        job = Job(lambda progress, cancelled: [session_overview(s) for s in sessions])
+        self.overview_job = job
+        job.finished.connect(self.on_overview)
+        start_job(self, job)
+
+    @pyqtSlot(object)
+    def on_overview(self, rows) -> None:
+        if self.sender() is not self.overview_job:
+            return
+        self.overview_job = None
+        for i, (s, o) in enumerate(zip(self.sessions, rows)):
+            if i < self.session_box.count():
+                done = o["pos"] + o["neg"] + o["skip"]
+                self.session_box.setItemText(i, f"{s.name}  ({o['frames']} frames, {done} reviewed, {o['pos']} labeled)")
 
     def fill_classes(self) -> None:
         self.class_list.blockSignals(True)
@@ -1197,7 +1217,7 @@ class MainWindow(QMainWindow):
         self.closing = True
         self.commit_current()
         self.cancel_loader()
-        self.reloader = None
+        self.reloader = self.overview_job = None
         stop_jobs(self)
         self.shutdown_sam()
         self.settings.setValue("geometry", self.saveGeometry())

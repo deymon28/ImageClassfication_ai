@@ -534,3 +534,15 @@ def test_frame_list_filter_maps_rows_back_to_the_queue(app, project):
     w.frame_filter.setText("")
     assert w.frame_proxy.rowCount() == 8
     w.close()
+
+
+def test_session_box_shows_counts(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    wait_until(app, lambda: "frames" in w.session_box.itemText(0))
+    assert w.session_box.itemText(0).startswith(s.name) and "(8 frames, 0 reviewed, 0 labeled)" in w.session_box.itemText(0)
+    w.close()
