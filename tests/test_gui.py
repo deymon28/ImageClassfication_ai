@@ -95,3 +95,34 @@ def test_russian_layout_keys_map_to_the_same_actions():
     assert key_name(Qt.Key.Key_Z, 0x5A, Qt.KeyboardModifier.ControlModifier) == "Ctrl+Z"
     assert key_name(Qt.Key.Key_Space, 0x20, Qt.KeyboardModifier.NoModifier) == "Space"
     assert key_name(Qt.Key.Key_2, 0x32, Qt.KeyboardModifier.NoModifier) == "2"
+    assert key_name(Qt.Key.Key_Equal, 0xBB, Qt.KeyboardModifier.NoModifier) == "="
+    assert key_name(Qt.Key.Key_Minus, 0xBD, Qt.KeyboardModifier.NoModifier) == "-"
+
+
+def test_loupe_magnifies_the_view_smoothly():
+    from framelabel.gui.canvas import LOUPE_MAX, loupe_window
+
+    # whole 1920 px frame fitted into 1040 px: the loupe shows 3x what is on screen, not a fixed huge zoom
+    x1, y1, x2, y2, k = loupe_window(960, 540, 1040 / 1920, 200, 3.0)
+    assert np.isclose(k, 3 * 1040 / 1920) and np.isclose(x2 - x1, 200 / k) and np.isclose((x1 + x2) / 2, 960)
+    # zooming the view 2x halves the image window (smooth, proportional)
+    k2 = loupe_window(960, 540, 2 * 1040 / 1920, 200, 3.0)[4]
+    assert np.isclose(k2, 2 * k)
+    # capped when the view is already zoomed far in
+    assert loupe_window(10, 10, 30.0, 200, 3.0)[4] == 40.0
+
+
+def test_loupe_zoom_is_adjustable_and_bounded(app):
+    from framelabel.gui.canvas import LOUPE_MAX, LOUPE_MIN, Canvas
+
+    c = Canvas()
+    seen = []
+    c.loupe_changed.connect(seen.append)
+    c.change_loupe_zoom(1.25)
+    assert np.isclose(c.loupe_zoom, 3.75) and seen == [c.loupe_zoom]
+    for _ in range(50):
+        c.change_loupe_zoom(1.25)
+    assert c.loupe_zoom == LOUPE_MAX
+    for _ in range(50):
+        c.change_loupe_zoom(0.8)
+    assert c.loupe_zoom == LOUPE_MIN

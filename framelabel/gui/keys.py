@@ -17,6 +17,8 @@ DEFAULT_KEYMAP: dict[str, list[str]] = {
     "reset_proposals": ["R"],
     "toggle_boxes": ["H"],
     "toggle_loupe": ["M"],
+    "loupe_in": ["=", "+", "Shift++"],
+    "loupe_out": ["-"],
     "toggle_class": ["C"],
     "delete_box": ["Delete", "Backspace"],
     "fit_view": ["Z"],

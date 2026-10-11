@@ -15,6 +15,21 @@ from framelabel.core.history import History
 from framelabel.core.view import View
 
 
+LOUPE_SIDE = 200          # loupe size on screen, px
+LOUPE_MIN, LOUPE_MAX = 1.5, 10.0
+LOUPE_MAX_SCALE = 40.0    # at most this many screen px per image px
+
+
+def loupe_window(ix: float, iy: float, view_scale: float, side: float, zoom: float,
+                 max_scale: float = LOUPE_MAX_SCALE) -> tuple[float, float, float, float, float]:
+    """Image window (x1, y1, x2, y2) shown in a loupe of `side` screen px centred on image point (ix, iy), and its
+    scale in screen px per image px: `zoom` times the view's current scale, so the loupe always magnifies what is on
+    screen by the same factor and follows the view zoom smoothly (capped at max_scale)."""
+    k = min(max(view_scale * zoom, 1e-6), max_scale)
+    half = side / 2 / k
+    return ix - half, iy - half, ix + half, iy + half, k
+
+
 def to_qimage(img: np.ndarray) -> QImage:
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     h, w = rgb.shape[:2]
@@ -26,6 +41,7 @@ class Canvas(QWidget):
     selection_changed = pyqtSignal(int)
     hover_info = pyqtSignal(str)
     sam_requested = pyqtSignal(object)   # Box (rough box) or tuple (x, y) point
+    loupe_changed = pyqtSignal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,6 +64,7 @@ class Canvas(QWidget):
         self.show_boxes = True
         self.show_weak = False
         self.loupe = True
+        self.loupe_zoom = 3.0  # loupe magnification relative to the current view
         self.sam_on_draw = False
         self.mouse = QPointF(-1, -1)
         self.drag: dict | None = None
@@ -242,27 +259,27 @@ class Canvas(QWidget):
             p.setPen(QPen(QColor(150, 150, 150, 160), 1))
             p.drawLine(QPointF(mx, 0), QPointF(mx, self.height()))
             p.drawLine(QPointF(0, my), QPointF(self.width(), my))
-            if self.loupe and s < 3:
+            if self.loupe:
                 self.paint_loupe(p, mx, my)
         if self.message:
             p.setPen(QColor(255, 220, 120))
             p.drawText(QRectF(10, self.height() - 26, self.width() - 20, 22), Qt.AlignmentFlag.AlignLeft, self.message)
 
-    def paint_loupe(self, p: QPainter, mx: float, my: float, r: int = 40, z: int = 4) -> None:
+    def paint_loupe(self, p: QPainter, mx: float, my: float) -> None:
         ix, iy = self.view.to_img(mx, my)
-        half = r / max(self.view.s, 1e-6) / z * 1.0  # image pixels shown on each side
-        half = max(half, 6.0)
-        x1, y1 = int(ix - half), int(iy - half)
-        x2, y2 = int(ix + half) + 1, int(iy + half) + 1
-        side = 2 * r * z // 2
+        side = LOUPE_SIDE
+        x1, y1, x2, y2, k = loupe_window(ix, iy, self.view.s, side, self.loupe_zoom)
         ox = 10 if mx > self.width() / 2 else self.width() - side - 10
         target = QRectF(ox, 10, side, side)
         p.fillRect(target, QColor(0, 0, 0))
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-        p.drawImage(target, self.qimg, QRectF(x1, y1, x2 - x1, y2 - y1))
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, k < 3)
+        # the part of the window inside the image, so the loupe stays exact at the image borders
+        cx1, cy1, cx2, cy2 = max(x1, 0.0), max(y1, 0.0), min(x2, float(self.iw)), min(y2, float(self.ih))
+        if cx2 > cx1 and cy2 > cy1:
+            p.drawImage(QRectF(ox + (cx1 - x1) * k, 10 + (cy1 - y1) * k, (cx2 - cx1) * k, (cy2 - cy1) * k), self.qimg,
+                        QRectF(cx1, cy1, cx2 - cx1, cy2 - cy1))
         p.save()
         p.setClipRect(target)
-        k = side / (x2 - x1)
         for b in self.boxes:
             bb = b.norm()
             p.setPen(QPen(self.color(b.cls), 1))
@@ -273,9 +290,16 @@ class Canvas(QWidget):
         p.drawLine(QPointF(cx, cy + 6), QPointF(cx, 10 + side))
         p.drawLine(QPointF(ox, cy), QPointF(cx - 6, cy))
         p.drawLine(QPointF(cx + 6, cy), QPointF(ox + side, cy))
+        p.drawText(QRectF(ox + 4, 10 + side - 18, side - 8, 16), Qt.AlignmentFlag.AlignRight,
+                   f"{self.loupe_zoom:.1f}x  (Ctrl+wheel, +/-)")
         p.restore()
         p.setPen(QPen(QColor(0, 255, 255), 1))
         p.drawRect(target)
+
+    def change_loupe_zoom(self, factor: float) -> None:
+        self.loupe_zoom = min(max(self.loupe_zoom * factor, LOUPE_MIN), LOUPE_MAX)
+        self.loupe_changed.emit(self.loupe_zoom)
+        self.update()
 
     def color(self, cls: int) -> QColor:
         return self.colors[cls] if 0 <= cls < len(self.colors) else QColor(255, 255, 255)
@@ -284,8 +308,12 @@ class Canvas(QWidget):
     def wheelEvent(self, e) -> None:
         if self.img is None:
             return
+        up = e.angleDelta().y() > 0
+        if self.loupe and e.modifiers() & Qt.KeyboardModifier.ControlModifier:  # loupe magnification
+            self.change_loupe_zoom(1.25 if up else 0.8)
+            return
         pos = e.position()
-        self.view.zoom_at(pos.x(), pos.y(), 1.25 if e.angleDelta().y() > 0 else 0.8)
+        self.view.zoom_at(pos.x(), pos.y(), 1.25 if up else 0.8)
         self.update()
 
     def mousePressEvent(self, e) -> None:

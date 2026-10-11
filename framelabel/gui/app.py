@@ -83,6 +83,11 @@ class MainWindow(QMainWindow):
         self.canvas.selection_changed.connect(self.on_selection)
         self.canvas.hover_info.connect(lambda s: self.pos_label.setText(s))
         self.canvas.sam_requested.connect(self.sam_fit)
+        try:
+            self.canvas.loupe_zoom = float(self.settings.value("loupe_zoom", 3.0))
+        except (TypeError, ValueError):
+            pass
+        self.canvas.loupe_changed.connect(lambda z: self.settings.setValue("loupe_zoom", z))
         self.grid.marks_changed.connect(self.update_status)
         self.grid.page_changed.connect(self.update_status)
 
@@ -222,6 +227,8 @@ class MainWindow(QMainWindow):
         self.act(m, "Fit image", lambda: self.do("fit_view"), "fit_view")
         self.act(m, "Show / hide boxes", lambda: self.do("toggle_boxes"), "toggle_boxes")
         self.act(m, "Loupe", lambda: self.do("toggle_loupe"), "toggle_loupe")
+        self.act(m, "Loupe: stronger (also Ctrl+wheel)", lambda: self.do("loupe_in"), "loupe_in")
+        self.act(m, "Loupe: weaker", lambda: self.do("loupe_out"), "loupe_out")
         self.act(m, "Fullscreen", lambda: self.do("fullscreen"), "fullscreen")
         gm = m.addMenu("Grid size")
         grp = QActionGroup(self)
@@ -251,7 +258,8 @@ class MainWindow(QMainWindow):
                     f"1-9 class | {k('accept_next')} accept | {k('empty_next')} empty | {k('skip_next')} skip | "
                     f"{k('prev')}/{k('next')} prev/next | {k('next_unreviewed')} next new | {k('undo')} undo | "
                     f"{k('copy_prev')} copy prev | {k('propagate_prev')} track prev | {k('sam_fit')} SAM fit, "
-                    f"Alt+click SAM | {k('accept_proposals')} accept proposals | W weak proposals")
+                    f"Alt+click SAM | {k('accept_proposals')} accept proposals | W weak proposals | "
+                    f"{k('toggle_loupe')} loupe, Ctrl+wheel or +/- its zoom")
         self.help_label.setText(text)
 
     # ================================================================ projects
@@ -678,6 +686,8 @@ class MainWindow(QMainWindow):
         elif action == "toggle_loupe":
             c.loupe = not c.loupe
             c.update()
+        elif action in ("loupe_in", "loupe_out") and c.loupe:
+            c.change_loupe_zoom(1.25 if action == "loupe_in" else 0.8)
         elif action == "fit_view":
             c.view.reset()
             c.update()

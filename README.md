@@ -75,7 +75,8 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
 3. **Editor**: proposals are dashed boxes with their confidence; drag on empty space = new box, drag a box = move,
    drag a corner or an edge = resize, RMB = delete, wheel = zoom at cursor, MMB drag = pan. Space = accept and next,
    E = empty, X = skip, A/D = previous/next, N = next unreviewed, Ctrl+Z / Ctrl+Y = undo/redo, R = back to the model's
-   proposals, Shift+Space = accept all proposals as labels.
+   proposals, Shift+Space = accept all proposals as labels. M toggles the loupe: it magnifies what is on screen
+   (3x by default, following the view zoom smoothly); Ctrl+wheel or +/- change it (1.5-10x, remembered).
 4. **Faster boxes**: W shows weak proposals below the threshold (click one to accept it); P copies the boxes of the
    previous labeled frame, T tracks them onto this frame (template matching, then snapped to overlapping proposals);
    "Carry boxes" does that automatically when moving to an unreviewed frame without proposals. F fits the selected
