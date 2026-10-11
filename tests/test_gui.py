@@ -486,3 +486,31 @@ def test_closing_with_a_running_job_stops_it(app, project, monkeypatch):
     assert w.close() is False and w.job is not None  # "No": keeps running
     assert w.close() is True  # "Yes": cancels and waits for the thread
     assert not w._reaper.jobs or all(not th.isRunning() for th, _ in w._reaper.jobs)
+
+
+def test_resume_goto_and_reload_keys(app, project, monkeypatch):
+    from PyQt6.QtWidgets import QInputDialog
+
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.set_mode("edit", queue="all")
+    w.go(4)
+    w.close()  # the position is remembered
+    w2 = MainWindow()
+    open_and_wait(app, w2, path)
+    w2.set_mode("edit", queue="all")
+    assert w2.cur_path.stem == "100004_000"  # not the first unreviewed frame
+    answers = iter([("2", True), ("100006", True), ("999", True)])
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: next(answers))
+    assert w2.handle_key("Ctrl+G") and w2.idx == 1
+    assert w2.handle_key("Ctrl+G") and w2.cur_path.stem == "100006_000"
+    assert w2.handle_key("Ctrl+G") and w2.cur_path.stem == "100006_000"  # unknown: stays
+    (s / "labels_auto" / "100006_000.txt").write_text("0 0.5 0.5 0.1 0.3 0.40")
+    assert w2.handle_key("F5")
+    wait_until(app, lambda: w2.reloader is None)
+    assert w2.cur_path.stem == "100006_000" and w2.canvas.boxes[0].conf == 0.4
+    w2.close()

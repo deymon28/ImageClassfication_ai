@@ -2,6 +2,7 @@
 boxes on the right. All decisions are saved immediately (labels/<stem>.txt and review.json)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ import cv2
 from PyQt6.QtCore import QEvent, QObject, QSettings, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
-                             QFileDialog, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow,
+                             QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow,
                              QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QStackedWidget, QTableWidget,
                              QVBoxLayout, QWidget)
 
@@ -256,6 +257,7 @@ class MainWindow(QMainWindow):
         self.act(m, "Toggle class of box", lambda: self.do("toggle_class"), "toggle_class")
         self.act(m, "Accept all proposals as labels", lambda: self.do("accept_proposals"), "accept_proposals")
         self.act(m, "Reset to model proposals", lambda: self.do("reset_proposals"), "reset_proposals")
+        self.act(m, "Go to frame...", lambda: self.do("goto_frame"), "goto_frame")
         m.addSeparator()
         self.act(m, "Copy boxes from previous frame", lambda: self.do("copy_prev"), "copy_prev")
         self.act(m, "Track boxes from previous frame", lambda: self.do("propagate_prev"), "propagate_prev")
@@ -265,6 +267,7 @@ class MainWindow(QMainWindow):
         self.act(m, "Grid / editor", lambda: self.do("switch_mode"), "switch_mode")
         self.act(m, "Next grid view", lambda: self.do("grid_view"), "grid_view")
         self.act(m, "Fit image", lambda: self.do("fit_view"), "fit_view")
+        self.act(m, "Reload proposals and new frames", lambda: self.do("reload"), "reload")
         self.act(m, "Show / hide boxes", lambda: self.do("toggle_boxes"), "toggle_boxes")
         self.act(m, "Loupe", lambda: self.do("toggle_loupe"), "toggle_loupe")
         self.act(m, "Loupe: stronger (also Ctrl+wheel)", lambda: self.do("loupe_in"), "loupe_in")
@@ -526,10 +529,47 @@ class MainWindow(QMainWindow):
                 self.canvas.update()
                 self.update_status()
                 return
+            if pos is None:
+                pos = self.resume_position(name)
             first = pos if pos is not None else                 next((i for i, f in enumerate(self.queue) if f.status in (None, "todo")), 0)
             self.load_frame(first)
             self.canvas.setFocus()
         self.update_status()
+
+    def position_key(self, queue_name: str) -> str:
+        root = str(self.ws.session.root).lower().encode()
+        return f"pos/{hashlib.sha1(root).hexdigest()[:12]}/{queue_name.replace(':', '_')}"
+
+    def remember_position(self, stem: str) -> None:
+        if self.ws is not None and self.queue_box.currentData():
+            self.settings.setValue(self.position_key(self.queue_box.currentData()), stem)
+
+    def resume_position(self, queue_name: str) -> int | None:
+        """Where the user stopped in this queue, if that frame is still waiting for a decision."""
+        stem = self.settings.value(self.position_key(queue_name), "")
+        i = next((k for k, f in enumerate(self.queue) if f.stem == stem), None) if stem else None
+        return i if i is not None and self.queue[i].status in (None, "todo") else None
+
+    def goto_frame(self) -> None:
+        """Jump to a frame of the current queue by 1-based number or by (the start of) its name."""
+        if self.ws is None or not self.queue:
+            return
+        text, ok = QInputDialog.getText(self, "Go to frame", f"Frame number (1-{len(self.queue)}) or name:")
+        if not ok or not text.strip():
+            return
+        text = text.strip()
+        if text.isdigit() and 1 <= int(text) <= len(self.queue):
+            i = int(text) - 1
+        else:  # not a valid number: a name, e.g. 100006 for the frame 100006_000
+            i = next((k for k, f in enumerate(self.queue) if f.stem.startswith(text)), -1)
+        if not 0 <= i < len(self.queue):
+            self.status_label.setText(f"No frame '{text}' in this queue.")
+            return
+        if self.mode == "grid":
+            self.grid.set_page(i // self.grid.per_page)
+            self.select_frame_row(i)
+        else:
+            self.go(i)
 
     # ---- re-reading proposals and new frames without leaving the frame
     def reload_session(self) -> None:
@@ -618,6 +658,7 @@ class MainWindow(QMainWindow):
         h, w = img.shape[:2]
         boxes, weak = self.ws.load_boxes(fi.path, w, h)
         self.cur_path = fi.path
+        self.remember_position(fi.stem)
         self.canvas.message = ""
         self.canvas.set_frame(img, boxes, weak, keep_view=True, qimg=qimg)
         if carried is not None and not boxes and fi.status in (None, "todo"):
@@ -775,7 +816,7 @@ class MainWindow(QMainWindow):
             else:
                 self.grid.close_preview()
             return True
-        grid_actions = ("commit_page", "prev_page", "next_page", "grid_view", "switch_mode", "fullscreen")
+        grid_actions = ("commit_page", "prev_page", "next_page", "grid_view", "switch_mode", "fullscreen", "reload", "goto_frame")
         for action in self.keymap.actions_for(name):
             if self.mode == "grid" and action not in grid_actions:
                 continue
@@ -793,6 +834,10 @@ class MainWindow(QMainWindow):
             self.switch_mode()
         elif action == "fullscreen":
             self.showNormal() if self.isFullScreen() else self.showFullScreen()
+        elif action == "reload":
+            self.reload_session()
+        elif action == "goto_frame":
+            self.goto_frame()
         elif self.mode == "grid":
             self.grid_action(action)
         elif not self.queue or self.cur_path is None:
@@ -1150,6 +1195,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.pool.shutdown(wait=False, cancel_futures=True)
         self.grid.shutdown()
+        self.settings.sync()
         super().closeEvent(e)
 
 

@@ -30,6 +30,8 @@ DEFAULT_KEYMAP: dict[str, list[str]] = {
     "grid_view": ["V"],
     "fullscreen": ["F11"],
     "save": ["Ctrl+S"],
+    "reload": ["F5"],
+    "goto_frame": ["Ctrl+G"],
     "prev_page": ["A", "Left", "Backspace"],
     "next_page": ["D", "Right"],
     "commit_page": ["Space", "Return", "Enter"],
