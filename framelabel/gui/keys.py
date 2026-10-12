@@ -37,6 +37,40 @@ DEFAULT_KEYMAP: dict[str, list[str]] = {
     "commit_page": ["Space", "Return", "Enter"],
 }
 
+# action -> (group, what the user reads in the shortcut dialog and the cheat sheet)
+ACTION_INFO: dict[str, tuple[str, str]] = {
+    "accept_next": ("Editor", "Save the frame (labeled, or empty without boxes) and go to the next"),
+    "empty_next": ("Editor", "Save as empty and go to the next"),
+    "skip_next": ("Editor", "Skip the frame (unusable) and go to the next"),
+    "prev": ("Editor", "Previous frame"),
+    "next": ("Editor", "Next frame"),
+    "next_unreviewed": ("Editor", "Next new frame (no decision yet)"),
+    "undo": ("Editor", "Undo"),
+    "redo": ("Editor", "Redo"),
+    "reset_proposals": ("Editor", "Back to the model's proposals"),
+    "toggle_boxes": ("Editor", "Show / hide boxes"),
+    "toggle_loupe": ("Editor", "Loupe on / off"),
+    "loupe_in": ("Editor", "Loupe: stronger"),
+    "loupe_out": ("Editor", "Loupe: weaker"),
+    "toggle_class": ("Editor", "Switch the selected box to the next class"),
+    "delete_box": ("Editor", "Delete the selected box"),
+    "fit_view": ("Editor", "Fit the image to the window"),
+    "copy_prev": ("Editor", "Copy the boxes of the previous labeled frame"),
+    "propagate_prev": ("Editor", "Track the previous frame's boxes onto this frame"),
+    "sam_fit": ("Editor", "Fit the selected box with SAM"),
+    "accept_proposals": ("Editor", "Accept all proposals as labels"),
+    "save": ("Editor", "Save now"),
+    "prev_page": ("Grid", "Previous page"),
+    "next_page": ("Grid", "Next page"),
+    "commit_page": ("Grid", "Commit the page: unmarked tiles become empty"),
+    "switch_mode": ("Everywhere", "Switch between grid and editor"),
+    "grid_view": ("Everywhere", "Next view in the list"),
+    "fullscreen": ("Everywhere", "Fullscreen on / off"),
+    "reload": ("Everywhere", "Re-read proposals and new frames"),
+    "goto_frame": ("Everywhere", "Go to a frame by number or name"),
+}
+ACTION_GROUPS = ("Everywhere", "Grid", "Editor")
+
 _NAMED = {
     Qt.Key.Key_Space: "Space", Qt.Key.Key_Return: "Return", Qt.Key.Key_Enter: "Enter", Qt.Key.Key_Tab: "Tab",
     Qt.Key.Key_Backspace: "Backspace", Qt.Key.Key_Delete: "Delete", Qt.Key.Key_Escape: "Esc", Qt.Key.Key_Left: "Left",

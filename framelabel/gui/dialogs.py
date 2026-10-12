@@ -8,13 +8,14 @@ from PyQt6.QtCore import QProcess, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
                              QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-                             QPlainTextEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout)
+                             QPlainTextEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QTextBrowser,
+                             QVBoxLayout)
 
 from framelabel.core.project import PALETTE, ClassDef, Project
 from framelabel.core.report import ReportRow
 from framelabel.core.session import Session
 from framelabel.ml.models import scan_models
-from .keys import DEFAULT_KEYMAP, Keymap
+from .keys import ACTION_GROUPS, ACTION_INFO, DEFAULT_KEYMAP, Keymap
 from .workers import Job, start_job, stop_jobs
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -447,22 +448,34 @@ class ProjectDialog(QDialog):
         p.game_processes = self.game.text().split()
 
 
+def ordered_actions() -> list[str]:
+    """The keymap's actions grouped (everywhere / grid / editor) the way the shortcut dialog and the help list them."""
+    return [a for g in ACTION_GROUPS for a in DEFAULT_KEYMAP if ACTION_INFO.get(a, ("Editor",))[0] == g]
+
+
 class KeymapDialog(QDialog):
     def __init__(self, keymap: Keymap, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Keyboard shortcuts")
-        self.resize(560, 700)
+        self.resize(760, 760)
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("Keys separated by commas, e.g. 'Space, Return' or 'Ctrl+Z'. Letters work in any keyboard "
-                             "layout. 1-9 select classes, W toggles weak proposals, Esc leaves fullscreen."))
-        self.table = QTableWidget(len(DEFAULT_KEYMAP), 2)
-        self.table.setHorizontalHeaderLabels(["action", "keys"])
+        lay.addWidget(QLabel("Several keys separated by commas, e.g. 'Space, Return' or 'Ctrl+Z'. Letters work in any "
+                             "keyboard layout. 1-9 select classes, W toggles weak proposals, Esc leaves fullscreen. "
+                             "Changes apply when you press OK."))
+        self.actions = ordered_actions()
+        self.table = QTableWidget(len(self.actions), 3)
+        self.table.setHorizontalHeaderLabels(["where", "what it does", "keys"])
+        self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setStretchLastSection(True)
-        for r, action in enumerate(DEFAULT_KEYMAP):
-            it = QTableWidgetItem(action)
-            it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(r, 0, it)
-            self.table.setItem(r, 1, QTableWidgetItem(", ".join(keymap.map[action])))
+        for r, action in enumerate(self.actions):
+            group, text = ACTION_INFO.get(action, ("Editor", action))
+            for c, value in enumerate((group, text)):
+                it = QTableWidgetItem(value)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(r, c, it)
+            self.table.setItem(r, 2, QTableWidgetItem(", ".join(keymap.map[action])))
+        self.table.setColumnWidth(0, 90)
+        self.table.setColumnWidth(1, 400)
         lay.addWidget(self.table)
         reset = QPushButton("Reset to defaults")
         reset.clicked.connect(self.reset)
@@ -471,13 +484,13 @@ class KeymapDialog(QDialog):
         self.keymap = keymap
 
     def reset(self) -> None:
-        for r, action in enumerate(DEFAULT_KEYMAP):
-            self.table.item(r, 1).setText(", ".join(DEFAULT_KEYMAP[action]))
+        for r, action in enumerate(self.actions):
+            self.table.item(r, 2).setText(", ".join(DEFAULT_KEYMAP[action]))
 
     def overrides(self) -> dict[str, list[str]]:
         out = {}
-        for r, action in enumerate(DEFAULT_KEYMAP):
-            keys = [k.strip() for k in self.table.item(r, 1).text().split(",") if k.strip()]
+        for r, action in enumerate(self.actions):
+            keys = [k.strip() for k in self.table.item(r, 2).text().split(",") if k.strip()]
             if keys != DEFAULT_KEYMAP[action]:
                 out[action] = keys
         return out
@@ -485,6 +498,54 @@ class KeymapDialog(QDialog):
     def accept(self) -> None:
         self.keymap = Keymap(self.overrides())
         super().accept()
+
+
+class HelpDialog(QDialog):
+    """What the mouse and the keys do in each mode, with the keys as currently set; opens on F1."""
+
+    MOUSE = {
+        "Grid": [("Click", "mark the frame 'has objects' (click again to undo)"),
+                 ("Ctrl+click or middle button", "mark the frame SKIP"),
+                 ("Hold the right button", "peek at the photo; it closes when you let go (a quick click keeps it open)"),
+                 ("1 × 1 tiles", "the tile is the photo itself: wheel zoom, drag to pan, no right click needed")],
+        "Editor": [("Drag on empty space", "new box"), ("Drag a box / corner / edge", "move / resize"),
+                   ("Right click", "delete the box under the cursor"), ("Wheel", "zoom at the cursor"),
+                   ("Middle drag", "pan"), ("Alt+click", "box from a point with SAM"),
+                   ("Click a faint box", "accept that weak proposal (when weak proposals are shown, W)")],
+    }
+
+    def __init__(self, keymap: Keymap, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Keyboard and mouse help")
+        self.resize(820, 780)
+        lay = QVBoxLayout(self)
+        view = QTextBrowser()
+        view.setHtml(self.html(keymap))
+        lay.addWidget(view)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        bb.rejected.connect(self.reject)
+        bb.accepted.connect(self.accept)
+        lay.addWidget(bb)
+
+    @classmethod
+    def html(cls, keymap: Keymap) -> str:
+        def table(rows: list[tuple[str, str]]) -> str:
+            return "<table cellpadding='3'>" + "".join(f"<tr><td><b>{k}</b></td><td>{v}</td></tr>" for k, v in rows) + "</table>"
+
+        out = ["<h3>How the window is organised</h3><p><b>Left:</b> the <i>view</i> (which frames: To do, Check, Done, "
+               "Browse, each with its count) and the <i>mode</i> (Grid or Editor: how you look at them). <b>Top:</b> where "
+               "you are and what you can do here. <b>Right:</b> the boxes or page marks, then the actions and settings.</p>"
+               "<p>A frame is <b>new</b> (no decision), <b>marked</b> ('has objects' ticked in the grid, boxes still to "
+               "do), <b>labeled</b>, <b>empty</b> or <b>skipped</b>. The To do and Check views only list frames without a "
+               "decision; Done lists the decisions.</p>"]
+        for group in ACTION_GROUPS:
+            rows = [(", ".join(keymap.map[a]), ACTION_INFO[a][1]) for a in DEFAULT_KEYMAP if ACTION_INFO.get(a, ("",))[0] == group]
+            out.append(f"<h3>Keys: {'everywhere' if group == 'Everywhere' else group.lower()}</h3>" + table(rows))
+            if group in cls.MOUSE:
+                out.append(f"<h3>Mouse: {group.lower()}</h3>" + table(cls.MOUSE[group]))
+        out.append("<h3>More keys</h3>" + table([("1-9", "select the class for new boxes (editor)"),
+                                                 ("W", "show / hide weak proposals"), ("Esc", "close a preview, leave fullscreen")]))
+        return "".join(out)
 
 
 class PerformanceDialog(QDialog):
@@ -507,7 +568,7 @@ class PerformanceDialog(QDialog):
             except (TypeError, ValueError):
                 return default
 
-        self.watchdog = QCheckBox("Log a stack trace when the window freezes for 2 s (applies at the next start)")
+        self.watchdog = QCheckBox("Log a stack trace when the window freezes for 2 s")
         self.watchdog.setChecked(boolean("perf/watchdog", True))
         self.io = QSpinBox()
         self.io.setRange(1, 32)

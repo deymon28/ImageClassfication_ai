@@ -78,6 +78,17 @@ class Grid(QWidget):
         return self.cols * self.rows
 
     @property
+    def sticky(self) -> bool:
+        """With one tile per page the tile is the whole photo: it is shown like the preview (zoom, pan) all the time
+        instead of needing a right click to open it."""
+        return self.per_page == 1
+
+    @property
+    def modal_preview(self) -> bool:
+        """A preview that was opened on purpose (right click) and has to be closed before anything else."""
+        return self.preview is not None and not self.sticky
+
+    @property
     def n_pages(self) -> int:
         return max(1, -(-len(self.items) // self.per_page))
 
@@ -109,6 +120,8 @@ class Grid(QWidget):
         self.page = min(max(page, 0), self.n_pages - 1)
         self.marks = {fi.stem: m for fi in self.page_items() if (m := self.initial_mark(fi))}
         self.close_preview()
+        if self.sticky and self.items:
+            self.open_preview(self.page_items()[0])
         self.page_changed.emit()
         self.update()
 
@@ -264,8 +277,18 @@ class Grid(QWidget):
             for (bx1, by1, bx2, by2), c in zip(fi.prop_xyxy, fi.confs):
                 p.setPen(QPen(QColor(255, 200, 0, 200), 1, Qt.PenStyle.DotLine))
                 p.drawRect(QRectF(QPointF(*v.to_widget(bx1 * v.iw, by1 * v.ih)), QPointF(*v.to_widget(bx2 * v.iw, by2 * v.ih))))
-        mark = {"people": "HAS OBJECTS", "skip": "SKIP"}.get(self.marks.get(fi.stem, ""), "not marked")
-        self.badge(p, 10, 10, f"{fi.stem}  [{mark}]  zoom {v.zoom:.1f}x   click: toggle 'has objects' | RMB / Esc: back", QColor(255, 255, 255))
+        kind = self.marks.get(fi.stem, "")
+        if kind == "people":
+            p.setPen(QPen(QColor(255, 60, 60), 6))
+            p.drawRect(self.rect().adjusted(3, 3, -3, -3))
+        elif kind == "skip":
+            p.fillRect(self.rect(), QColor(0, 0, 0, 120))
+            p.setPen(QPen(QColor(160, 160, 160), 6))
+            p.drawRect(self.rect().adjusted(3, 3, -3, -3))
+        mark = {"people": "HAS OBJECTS", "skip": "SKIP"}.get(kind, "not marked")
+        hint = ("click: has objects | Ctrl+click or MMB: skip | wheel: zoom | drag: pan | Z: fit" if self.sticky
+                else "click: toggle 'has objects' | RMB / Esc: back")
+        self.badge(p, 10, 10, f"{fi.stem}  [{mark}]  zoom {v.zoom:.1f}x   {hint}", QColor(255, 255, 255))
 
     # ---------------- preview
     def open_preview(self, fi: FrameInfo) -> None:
@@ -288,7 +311,7 @@ class Grid(QWidget):
         if self.preview is not None:
             if e.button() == Qt.MouseButton.LeftButton or e.button() == Qt.MouseButton.MiddleButton:
                 self.press = pos
-            elif e.button() == Qt.MouseButton.RightButton:
+            elif e.button() == Qt.MouseButton.RightButton and not self.sticky:
                 self.close_preview()
             return
         i = self.tile_at(pos.x(), pos.y())
@@ -328,9 +351,11 @@ class Grid(QWidget):
         if self.preview is not None and self.press is not None:
             moved = abs(pos.x() - self.press.x()) + abs(pos.y() - self.press.y())
             self.press = None
-            if moved <= 4 and e.button() == Qt.MouseButton.LeftButton:
-                self.toggle(self.preview.stem, "people")
-                self.close_preview()
+            if moved <= 4 and e.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.MiddleButton):
+                skip = e.button() == Qt.MouseButton.MiddleButton or bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                self.toggle(self.preview.stem, "skip" if skip else "people")
+                if not self.sticky:
+                    self.close_preview()
 
     def wheelEvent(self, e) -> None:
         if self.preview is not None:

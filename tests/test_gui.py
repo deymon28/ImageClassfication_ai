@@ -71,7 +71,6 @@ def test_grid_then_editor_flow(app, project):
     w = MainWindow()
     w.settings.clear()
     open_and_wait(app, w, path)
-    w.hide_check.setChecked(False)  # this flow walks reviewed frames again (the 'hide reviewed' view has its own test)
     w.resize(1200, 800)
     w.show()
     app.processEvents()
@@ -87,9 +86,9 @@ def test_grid_then_editor_flow(app, project):
     assert w.mode == "edit"
     st = {k: v for k, v in w.ws.review.status.items()}
     assert sorted(st.values()).count("neg") == 4 and list(st.values()).count("todo") == 1
-    # the edit queue: the marked frame and the two frames with proposals (skipped frames are re-checkable too)
+    # the edit queue is work still to do: the marked frame and the two frames with proposals (no skipped / empty ones)
     stems = [f.stem for f in w.queue]
-    assert stems[0] == first and "100006_000" in stems and "100007_000" in stems
+    assert stems == [first, "100006_000", "100007_000"]
     c = w.canvas
     c.resize(640, 360)
     app.processEvents()
@@ -103,10 +102,8 @@ def test_grid_then_editor_flow(app, project):
     assert w.handle_key("Space")
     lab = (s / "labels" / f"{first}.txt").read_text().split()
     assert w.ws.review.get(first) == "pos" and lab[0] == "1"
-    assert w.queue[w.idx].stem == w.queue[1].stem and c.boxes == []  # the skipped frame comes next in time order
-    assert w.handle_key("N")  # next unreviewed: a frame with a model proposal
-    cur = w.queue[w.idx].stem
-    assert cur == "100006_000" and len(c.boxes) == 1 and c.boxes[0].conf == 0.8  # the next frame shows the model proposal
+    cur = w.queue[w.idx].stem  # the skipped frame is not work to do: the next one is the first with a proposal
+    assert cur == "100006_000" and len(c.boxes) == 1 and c.boxes[0].conf == 0.8
     assert w.handle_key("E")  # empty
     assert w.ws.review.get(cur) == "neg" and (s / "labels" / f"{cur}.txt").read_text() == ""
     assert w.handle_key("A") and w.queue[w.idx].stem == cur
@@ -545,7 +542,7 @@ def test_session_box_shows_counts(app, project):
     w.settings.clear()
     open_and_wait(app, w, path)
     wait_until(app, lambda: "frames" in w.session_box.itemText(0))
-    assert w.session_box.itemText(0).startswith(s.name) and "(8 frames, 0 reviewed, 0 labeled)" in w.session_box.itemText(0)
+    assert w.session_box.itemText(0).startswith(s.name) and "(8 frames, 0 decided, 0 labeled)" in w.session_box.itemText(0)
     w.close()
 
 
@@ -631,7 +628,7 @@ def test_session_report_window_opens_the_view_of_a_row(app, project, monkeypatch
     w = MainWindow()
     w.settings.clear()
     open_and_wait(app, w, path)
-    assert "recorder dropped: 50 ui" in w.counts_label.text() and "50 ui" in w.status_label.text()
+    assert "50 ui" in w.status_label.text() and "new 8" in w.counts_label.text()
     seen = {}
 
     def fake_exec(self):  # the user double-clicks the "weak proposals" row, the report closes, the view opens
@@ -644,7 +641,7 @@ def test_session_report_window_opens_the_view_of_a_row(app, project, monkeypatch
     w.session_report()
     text = seen["dlg"].as_text()
     assert "Recorder skipped: ui: 50" in text and "Proposals hidden by an ignore zone" in text
-    assert w.mode == "grid" and w.queue_box.currentData() == "zone" and w.grid.show_ignored
+    assert w.mode == "grid" and w.view_key == "zone" and w.grid.show_ignored
     w.set_mode("grid", queue="triage")
     assert not w.grid.show_ignored
     w.close()
@@ -733,39 +730,144 @@ def test_grid_sizes_1x1_2x1_1x2(app, project):
         last = tile_center(g, min(cols * rows, len(w.queue)) - 1)  # every tile of the page can be hit
         assert g.tile_at(tile_center(g, 0).x(), tile_center(g, 0).y()) == 0
         assert g.tile_at(last.x(), last.y()) == cols * rows - 1
-    assert any("1 x 1" in t for t in labels) and any("2 x 1" in t for t in labels) and any("1 x 2" in t for t in labels)
+    assert any("1 × 1" in t for t in labels) and any("2 × 1" in t for t in labels) and any("1 × 2" in t for t in labels)
     assert w.settings.value("grid") == "1x2"
     w.close()
 
 
-def test_hide_reviewed_keeps_decided_frames_out_of_the_work_views(app, project):
+def test_todo_views_only_list_frames_without_a_decision(app, project):
     from framelabel.gui.app import MainWindow
 
     path, s = project
     w = MainWindow()
     w.settings.clear()
     open_and_wait(app, w, path)
-    assert w.hide_check.isChecked()  # on by default
     first, second = w.queue[0].stem, w.queue[1].stem
     w.grid.toggle(first, "people")
     w.grid.toggle(second, "skip")
-    assert w.handle_key("Space")  # commit the page: one queued, one skipped, the rest empty
-    assert w.mode == "edit"  # the only page is done: the editor opens with the work that is left
-    assert [f.stem for f in w.queue] == [first, "100006_000", "100007_000"]  # queued + new proposals; no empty / skipped
-    # coming back later (reopening, switching views): the decided frames are gone from the grid, nothing is lost
+    assert w.handle_key("Space")  # commit the page: one marked, one skipped, the rest empty
+    assert w.mode == "edit" and w.view_key == "edit"  # triage is done: the editor opens with the work that is left
+    assert [f.stem for f in w.queue] == [first, "100006_000", "100007_000"]  # marked + new proposals; no empty / skipped
+    # coming back later (reopening, switching views): the decided frames are gone from the to-do views, nothing is lost
     w.set_mode("grid", queue="triage")
-    assert w.queue == []
-    w.hide_check.setChecked(False)
-    assert len(w.queue) == 6 and {f.stem: f.status for f in w.queue}[second] == "skip"
-    w.hide_check.setChecked(True)
+    assert w.queue == [] and "Nothing in" in w.grid.message and "decision" in w.grid.message
     w.set_mode("grid", queue="skip")
-    assert [f.stem for f in w.queue] == [second]  # a status view always shows its frames
+    assert [f.stem for f in w.queue] == [second]  # the Done views show the decisions
+    w.set_mode("grid", queue="all")
+    assert len(w.queue) == 8
     w.set_mode("edit", queue="edit")
-    assert [f.stem for f in w.queue] == [first, "100006_000", "100007_000"]  # queued + new proposals; no empty / skipped
-    assert w.setting_bool("hide_reviewed", True) is True  # the choice is remembered in the settings
-    w.hide_check.setChecked(False)
-    assert w.setting_bool("hide_reviewed", True) is False
+    assert [f.stem for f in w.queue] == [first, "100006_000", "100007_000"]
     w.close()
+
+
+def test_views_have_counts_and_the_current_one_is_highlighted(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    wait_until(app, lambda: bool(w.counts_by_view))
+    c = w.counts_by_view
+    assert c["triage"] == 6 and c["edit"] == 2 and c["all"] == 8 and c["pos"] == 0 and c["unreviewed"] == 8
+    tree = w.view_tree
+    assert tree.items["triage"].text(1) == "6" and tree.current_key() == "triage"
+    # headings are not views; classes get a view each
+    assert all(not (g.flags() & Qt.ItemFlag.ItemIsSelectable) for g in tree.groups.values())
+    assert "class:0" in tree.items and "class:1" in tree.items
+    # the context bar says where you are and what to do
+    bar = w.context_bar
+    assert bar.title.text() == "Triage: model found nothing" and "page 1 of 1" in bar.where.text()
+    assert "saved as empty" in bar.hint.text()
+    # a decision updates the counts (debounced) and the progress
+    w.grid.toggle(w.queue[0].stem, "skip")
+    w.handle_key("Space")
+    wait_until(app, lambda: w.counts_by_view.get("skip") == 1)
+    assert w.done_bar.value() == 6 and "6 of 8 decided" in w.done_bar.text()
+    w.close()
+
+
+def test_mode_and_view_are_independent_and_the_mode_is_remembered_per_view(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.on_view_chosen("skip")  # a Done view opens the way it suits best: a grid of tiles
+    assert w.mode == "grid" and w.view_key == "skip" and w.view_tree.current_key() == "skip"
+    w.on_mode_chosen("edit")  # the switch changes how it is shown, not what
+    assert w.mode == "edit" and w.view_key == "skip" and w.mode_switch.buttons["edit"].isChecked()
+    assert w.stack.currentWidget() is w.canvas and w.action_pages.currentIndex() == 1
+    w.on_view_chosen("neg")
+    assert w.mode == "grid" and w.view_key == "neg" and w.mode_switch.buttons["grid"].isChecked()
+    w.on_view_chosen("skip")
+    assert w.mode == "edit"  # last time you looked at 'skipped' in the editor
+    w.on_view_chosen("pos")
+    w.handle_key("V")  # next view that has frames: the empty ones are passed over
+    assert w.view_key in w.view_tree.items and w.view_key != "pos"
+    w.close()
+
+
+def test_one_by_one_grid_is_the_photo_itself(app, tmp_path):
+    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6.QtTest import QTest
+
+    NO, LMB, RMB = Qt.KeyboardModifier.NoModifier, Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton
+    g = make_grid(app, tmp_path, 1, 1)
+    assert g.sticky and g.preview is not None and not g.modal_preview  # no right click needed
+    pos = QPoint(g.width() // 2, g.height() // 2)
+    stem = g.preview.stem
+    QTest.mouseClick(g, LMB, NO, pos)
+    assert g.marks.get(stem) == "people" and g.preview is not None  # the click marks and the photo stays
+    QTest.mouseClick(g, LMB, Qt.KeyboardModifier.ControlModifier, pos)
+    assert g.marks.get(stem) == "skip" and g.preview is not None
+    QTest.mouseClick(g, RMB, NO, pos)
+    assert g.preview is not None  # the right button does not close it
+    z = g.preview_view.zoom
+    g.preview_view.zoom_at(pos.x(), pos.y(), 2.0)
+    assert g.preview_view.zoom > z
+    g.set_page(1)  # the next page shows the next photo, fitted again
+    assert g.preview is not None and g.preview.stem != stem and abs(g.preview_view.zoom - 1.0) < 1e-6
+    g.cols, g.rows = 2, 2  # with several tiles the preview is a peek again
+    g.set_page(0)
+    assert not g.sticky and g.preview is None
+    g.shutdown()
+
+
+def test_actions_confirm_themselves_and_the_confidence_applies_at_once(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    w.set_mode("edit", queue="all")
+    w.do("empty_next")
+    assert "empty" in w.central.toast.text().lower() and w.central.toast.isVisible()
+    w.do("skip_next")
+    assert "skipped" in w.central.toast.text().lower()
+    # the shown confidence rebuilds the view: 0.80 proposals are below 0.9, so they join the 'found nothing' views
+    w.set_mode("grid", queue="triage")
+    assert len(w.queue) == 4  # six frames found nothing, two of them are decided now
+    w.conf_spin.setValue(0.9)
+    w.apply_conf()
+    assert len(w.queue) == 6  # the two frames with a 0.80 proposal come in
+    w.close()
+
+
+def test_every_action_has_a_readable_name_and_the_help_lists_the_keys(app):
+    from framelabel.gui.dialogs import HelpDialog, KeymapDialog, ordered_actions
+    from framelabel.gui.keys import ACTION_INFO, DEFAULT_KEYMAP, Keymap
+
+    assert set(DEFAULT_KEYMAP) <= set(ACTION_INFO)  # no raw identifiers like accept_next in the UI
+    assert sorted(ordered_actions()) == sorted(DEFAULT_KEYMAP)
+    html = HelpDialog.html(Keymap({"empty_next": ["F9"]}))
+    assert "F9" in html and "Space" in html and "Photo" not in html and "1 × 1" in html
+    d = KeymapDialog(Keymap({"empty_next": ["F9"]}))
+    assert d.overrides() == {"empty_next": ["F9"]}
 
 
 def test_the_shown_confidence_you_chose_survives_a_restart(app, project):

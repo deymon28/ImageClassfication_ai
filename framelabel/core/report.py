@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .queues import FrameInfo, build_queue
+from .views import GROUPS, find_view, view_frames
 from .session import Session
 
+GROUP_NAMES = dict(GROUPS)
 CAPTURE_REASONS = {
     "ui": "interface screen (menu, inventory, map...) dropped by the recorder's UI filter",
     "duplicate": "almost identical to the previous saved frame",
@@ -67,31 +69,31 @@ def capture_rows(info: dict | None) -> list[ReportRow]:
     return rows
 
 
-QUEUE_ROWS = [  # (mode, queue, label, note)
-    ("grid", "triage", "Model found nothing (no proposal at the shown confidence)",
+QUEUE_ROWS = [  # (queue, label, note): the label says what the frames are, the view name says where they are
+    ("triage", "Model found nothing (no proposal at the shown confidence)",
      "confirm as empty a page at a time; frames with weak or zone-hidden proposals are in here too"),
-    ("grid", "weak", "...of which unreviewed with a weak proposal (below the shown confidence)",
+    ("weak", "...of which with a weak proposal (below the shown confidence)",
      "dotted boxes in the grid; press W in the editor to see them"),
-    ("grid", "zone", "Proposals hidden by an ignore zone",
+    ("zone", "Proposals hidden by an ignore zone",
      "the model saw something inside the ignore zone only (e.g. the HUD icon): the frame looks empty; shown as cyan boxes"),
-    ("grid", "ui", "Suspected interface screens (framelabel's own detection)",
+    ("ui", "Suspected interface screens (framelabel's own detection)",
      "pre-marked SKIP when a page of the grid is committed unless you change the mark"),
-    ("edit", "edit", "To review: has proposals at the shown confidence, or marked / labeled / skipped", ""),
-    ("edit", "uncertain", "Uncertain proposals", "confidence 0.15-0.6, unreviewed"),
-    ("edit", "small", "Small (far) objects", ""),
-    ("edit", "disagree", "Model disagrees with the labels", "confident proposals without a label, labels without a proposal"),
-    ("grid", "neg", "Saved as empty", ""),
-    ("grid", "skip", "Skipped", "set by you in the grid / editor, or accepted from the interface suggestion"),
-    ("grid", "unreviewed", "Not reviewed yet", ""),
+    ("edit", "To label: has proposals at the shown confidence, or marked in the grid", ""),
+    ("uncertain", "Unsure proposals", "confidence 0.15-0.6, no decision yet"),
+    ("small", "Small (far) objects", "no decision yet"),
+    ("disagree", "Model disagrees with the labels", "confident proposals without a label, labels without a proposal"),
+    ("neg", "Saved as empty", ""),
+    ("skip", "Skipped", "set by you in the grid / editor, or accepted from the interface suggestion"),
+    ("unreviewed", "New: no decision yet", ""),
 ]
 
 
-def frame_rows(index: list[FrameInfo], conf: float, ui_threshold: float, hide_reviewed: bool = False) -> list[ReportRow]:
+def frame_rows(index: list[FrameInfo], conf: float, ui_threshold: float, class_names: list[str] | None = None) -> list[ReportRow]:
     rows = [ReportRow("Frames in the session", len(index), "all frames on disk", mode="edit", queue="all")]
-    for mode, queue, label, note in QUEUE_ROWS:
-        n = len(build_queue(index, queue, conf=conf, ui_threshold=ui_threshold, hide_reviewed=hide_reviewed))
-        where = f"{'Grid' if mode == 'grid' else 'Editor'} view \"{queue}\""
-        rows.append(ReportRow(label, n, where, note, mode, queue))
+    for queue, label, note in QUEUE_ROWS:
+        view = find_view(queue, class_names or [])
+        n = len(view_frames(index, queue, conf, ui_threshold))
+        rows.append(ReportRow(label, n, f"{GROUP_NAMES[view.group]}: {view.label}", note, view.mode, queue))
     return rows
 
 

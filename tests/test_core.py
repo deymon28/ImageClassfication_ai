@@ -531,3 +531,29 @@ def test_hide_reviewed_frames_only_touches_the_work_views():
     assert q("edit", False) == ["2", "3", "4", "5"] and q("edit", True) == ["3", "4"]  # editor: 'todo' still waits
     for name in ("all", "neg", "skip", "pos", "todo"):  # views of a status and 'all' are never filtered
         assert q(name, True) == q(name, False)
+
+
+def test_views_group_the_work_still_to_do_apart_from_the_decisions():
+    from pathlib import Path
+
+    from framelabel.core.queues import FrameInfo
+    from framelabel.core.views import GROUPS, all_views, find_view, status_counts, view_counts, view_frames
+
+    def fi(name, status, conf=None):
+        return FrameInfo(Path(f"{name}.jpg"), status, confs=[conf] if conf is not None else [])
+
+    index = [fi("a", None), fi("b", None, 0.8), fi("c", "todo", 0.9), fi("d", "pos", 0.9), fi("e", "neg"), fi("f", "skip")]
+    views = all_views(["enemy", "corpse"])
+    assert [g for g, _ in GROUPS] == ["todo", "check", "done", "browse"]
+    assert [v.key for v in views if v.group == "browse"] == ["all", "class:0", "class:1"]
+    assert len({v.key for v in views}) == len(views)
+    assert find_view("class:1", ["enemy", "corpse"]).label == "Has class corpse"
+    stems = lambda key: [f.stem for f in view_frames(index, key, 0.3, 0.3)]  # noqa: E731
+    # to-do views never list a frame that has a decision; marked frames still count as work
+    assert stems("triage") == ["a"] and stems("edit") == ["b", "c"] and stems("todo") == ["c"]
+    assert stems("unreviewed") == ["a", "b"]
+    # the done views are the decisions, 'all' is everything
+    assert stems("pos") == ["d"] and stems("neg") == ["e"] and stems("skip") == ["f"] and len(stems("all")) == 6
+    counts = view_counts(index, ["enemy", "corpse"], 0.3, 0.3)
+    assert counts["triage"] == 1 and counts["all"] == 6 and set(counts) == {v.key for v in views}
+    assert status_counts(index) == {"new": 2, "marked": 1, "labeled": 1, "empty": 1, "skipped": 1}
