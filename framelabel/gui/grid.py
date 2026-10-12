@@ -18,8 +18,8 @@ from framelabel.core.view import View
 from .canvas import to_qimage
 from .theme import qc
 
-GAP = 8
-TILE_RADIUS = 8
+GAP = 4
+TILE_RADIUS = 4
 STATUS_TAGS = {"neg": "empty", "pos": "labeled", "skip": "skipped", "todo": "marked"}
 STATUS_TAG_COLORS = {"neg": "neutral", "pos": "ok", "skip": "skip", "todo": "warn"}
 PEEK_HOLD_S = 0.3  # a right button held longer than this is a 'peek': the photo closes when the button is released
@@ -212,7 +212,7 @@ class Grid(QWidget):
         else:
             tiles = self.tiles(tw, th)
         font = QFont(self.font())
-        font.setPointSizeF(9)
+        font.setPointSizeF(8)
         p.setFont(font)
         for i, fi in enumerate(self.page_items()):
             x, y = x0 + (i % self.cols) * (tw + GAP), y0 + (i // self.cols) * (th + GAP)
@@ -234,19 +234,19 @@ class Grid(QWidget):
                 p.setPen(QPen(QColor(0, 220, 255), 2, Qt.PenStyle.DotLine))
                 for bx1, by1, bx2, by2 in fi.ignored_xyxy:
                     p.drawRect(QRectF(x + bx1 * tw, y + by1 * th, (bx2 - bx1) * tw, (by2 - by1) * th))
-                self.pill(p, x + 8, y + 8, f"ignore zone {fi.ignored_conf:.2f}", QColor(0, 0, 0, 170), QColor(0, 220, 255), 9)
+                self.pill(p, x + 6, y + 6, f"ignore zone {fi.ignored_conf:.2f}", QColor(0, 0, 0, 170), QColor(0, 220, 255))
             # caption: a dark fade at the bottom with the frame name and its state
-            fade = QLinearGradient(0, y + th - 34, 0, y + th)
+            fade = QLinearGradient(0, y + th - 26, 0, y + th)
             fade.setColorAt(0, QColor(0, 0, 0, 0))
-            fade.setColorAt(1, QColor(0, 0, 0, 190))
-            p.fillRect(QRectF(x, y + th - 34, tw, 34), fade)
+            fade.setColorAt(1, QColor(0, 0, 0, 180))
+            p.fillRect(QRectF(x, y + th - 26, tw, 26), fade)
             p.restore()
             mark = self.marks.get(fi.stem)
             if mark == "people":
                 p.setPen(QPen(qc("accent"), 3))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), TILE_RADIUS, TILE_RADIUS)
-                self.pill(p, x + 10, y + 10, "HAS OBJECTS", qc("accent"), QColor("#ffffff"))
+                self.pill(p, x + 6, y + 6, "HAS OBJECTS", qc("accent"), QColor("#ffffff"))
             elif mark == "skip":
                 p.save()
                 p.setClipPath(clip)
@@ -255,7 +255,7 @@ class Grid(QWidget):
                 p.setPen(QPen(qc("line2"), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), TILE_RADIUS, TILE_RADIUS)
-                self.pill(p, x + 10, y + 10, "SKIP", qc("bg3"), qc("text2"))
+                self.pill(p, x + 6, y + 6, "SKIP", qc("bg3"), qc("text2"))
             elif i == self.hover:
                 p.setPen(QPen(QColor(255, 255, 255, 150), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
@@ -264,7 +264,7 @@ class Grid(QWidget):
             right = f"model {fi.max_conf:.2f}" if fi.max_conf > 0 else ""
             if fi.ui < self.ui_threshold:
                 right += "  UI?"
-            cap = QRectF(x + 10, y + th - 24, tw - 20, 20)
+            cap = QRectF(x + 7, y + th - 19, tw - 14, 17)
             p.setPen(QColor(255, 255, 255, 235))
             p.drawText(cap, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, fi.stem)
             if tag:
@@ -275,16 +275,16 @@ class Grid(QWidget):
             p.setPen(QColor(255, 255, 255, 170))
             p.drawText(cap, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, right.strip())
 
-    def pill(self, p: QPainter, x: float, y: float, text: str, bg: QColor, fg: QColor, size: float = 9.5) -> None:
+    def pill(self, p: QPainter, x: float, y: float, text: str, bg: QColor, fg: QColor, size: float = 8) -> None:
         """A rounded label ('HAS OBJECTS', 'SKIP') on a tile or on the photo."""
         p.save()
         f = QFont(self.font())
         f.setPointSizeF(size)
         f.setBold(True)
-        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.5)
         p.setFont(f)
-        w = p.fontMetrics().horizontalAdvance(text) + 18
-        h = p.fontMetrics().height() + 8
+        w = p.fontMetrics().horizontalAdvance(text) + 14
+        h = p.fontMetrics().height() + 5
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)
         p.drawRoundedRect(QRectF(x, y, w, h), h / 2, h / 2)

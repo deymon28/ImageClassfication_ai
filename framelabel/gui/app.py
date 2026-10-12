@@ -40,6 +40,7 @@ from .workers import Job, start_job, stop_jobs
 
 ROOT = Path(__file__).resolve().parents[2]
 log = logging.getLogger("framelabel")
+SIDE_WIDTH_LEFT, SIDE_WIDTH_RIGHT = 224, 236   # the side panels stay narrow: the photos get the rest
 COUNTS_DEBOUNCE_MS = 400   # the counts next to the views are recomputed this long after the last change
 CONF_PRESETS = (0.10, 0.20, 0.30, 0.50)
 
@@ -84,6 +85,7 @@ class MainWindow(QMainWindow):
         self.sessions: list[Session] = []
         self.ws: Workspace | None = None
         self.mode = "grid"
+        self.panels_visible = True
         self.view_key = "triage"  # the view (set of frames) shown; the mode says how it is shown
         self.queue: list[FrameInfo] = []
         self.idx = 0
@@ -116,6 +118,8 @@ class MainWindow(QMainWindow):
         self.resize(1600, 950)
         self.build_ui()
         self.build_menus()
+        self.size_docks()
+        QTimer.singleShot(0, self.size_docks)  # once the window has its size
         QApplication.instance().installEventFilter(self)
         geo = self.settings.value("geometry")
         if geo is not None:
@@ -124,6 +128,12 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self.open_target(Path(target)))
         elif (recent := self.recent()) and Path(recent[0]).exists():
             QTimer.singleShot(0, lambda: self.open_target(Path(recent[0])))
+
+    def showEvent(self, e) -> None:
+        super().showEvent(e)
+        if not getattr(self, "docks_sized", False):
+            self.docks_sized = True
+            QTimer.singleShot(0, self.size_docks)  # the dock widths can only be set once the window is laid out
 
     def setting_bool(self, key: str, default: bool) -> bool:
         v = self.settings.value(key, default)
@@ -181,13 +191,15 @@ class MainWindow(QMainWindow):
         """Session, how far you are, grid / editor, the views with their counts, and the frames of the current view."""
         left = QWidget()
         lv = QVBoxLayout(left)
-        lv.setContentsMargins(4, 4, 4, 4)
+        lv.setContentsMargins(10, 8, 10, 6)
+        lv.setSpacing(6)
         self.session_box = QComboBox()
         self.session_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.session_box.setMinimumContentsLength(20)
+        self.session_box.setMinimumContentsLength(6)
         self.session_box.currentIndexChanged.connect(self.on_session_changed)
         self.report_btn = QToolButton()
         self.report_btn.setText("Report")
+        self.report_btn.setProperty("quiet", True)
         self.report_btn.setToolTip("Session report: counts of everything hidden from the normal views (recorder, interface "
                                    "screens, ignore zones, weak proposals, dropped classes), each with a view")
         self.report_btn.clicked.connect(self.session_report)
@@ -196,12 +208,13 @@ class MainWindow(QMainWindow):
         row.addWidget(self.report_btn)
         lv.addLayout(row)
         self.done_bar = QProgressBar()
+        self.done_bar.setTextVisible(False)
         self.done_bar.setToolTip("Frames with a decision (labeled, empty or skipped) out of all frames of the session")
         self.counts_label = QLabel()
         self.counts_label.setWordWrap(True)
         # long summaries must wrap, not widen the dock
         self.counts_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
-        self.counts_label.setProperty("role", "muted")
+        self.counts_label.setProperty("role", "note")
         self.counts_label.setTextFormat(Qt.TextFormat.RichText)
         lv.addWidget(self.done_bar)
         lv.addWidget(self.counts_label)
@@ -216,7 +229,7 @@ class MainWindow(QMainWindow):
         self.frame_proxy.setSourceModel(self.frame_model)
         self.frame_proxy.setFilterCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.frame_filter = QLineEdit()
-        self.frame_filter.setPlaceholderText("Filter frames (e.g. 1024, new, empty)")
+        self.frame_filter.setPlaceholderText("Filter: 1024, new, empty")
         self.frame_filter.setClearButtonEnabled(True)
         self.frame_filter.textChanged.connect(self.frame_proxy.setFilterFixedString)
         self.frame_list = QListView()
@@ -225,7 +238,7 @@ class MainWindow(QMainWindow):
         self.frame_list.setEditTriggers(QListView.EditTrigger.NoEditTriggers)
         self.frame_list.activated.connect(self.on_frame_clicked)
         self.frame_list.clicked.connect(self.on_frame_clicked)
-        self.frames_title = section_label("Frames in this view")
+        self.frames_title = section_label("Frames")
         lower = QWidget()
         lw = QVBoxLayout(lower)
         lw.setContentsMargins(0, 0, 0, 0)
@@ -242,8 +255,10 @@ class MainWindow(QMainWindow):
         lv.addWidget(split, 1)
         dock = QDockWidget("Frames", self)
         dock.setObjectName("frames")
+        dock.setTitleBarWidget(QWidget())
         dock.setWidget(left)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+        self.left_dock = dock
 
     def fit_view_tree(self) -> None:
         """Give the view list the height of all its rows (no scrolling), the rest of the panel to the frame list."""
@@ -252,52 +267,45 @@ class MainWindow(QMainWindow):
         self.left_split.setSizes([h, max(total - h, 120)])
 
     def build_frame_dock(self) -> None:
-        """Right, top: what belongs to the thing on screen - the boxes of the frame, or the marks of the grid page."""
+        """Right, top (editor only): the class for new boxes and the boxes of this frame. No title bar: the panel says
+        what it is by its first heading, and every pixel not spent on chrome goes to the photo."""
         self.frame_dock = QDockWidget("This frame", self)
         self.frame_dock.setObjectName("labels")
-        self.frame_pages = QStackedWidget()
-        # grid page: what committing will do
-        gp = QWidget()
-        gl = QVBoxLayout(gp)
-        gl.setContentsMargins(6, 6, 6, 6)
-        gl.addWidget(section_label("This page"))
-        self.page_label = QLabel()
-        self.page_label.setWordWrap(True)
-        self.page_label.setTextFormat(Qt.TextFormat.RichText)
-        gl.addWidget(self.page_label)
-        gl.addWidget(note_label("Nothing is saved until you commit the page. Unmarked tiles are saved as empty, tiles marked "
-                                "'has objects' go to the editor, SKIP tiles are set aside."))
-        gl.addStretch(1)
-        self.frame_pages.addWidget(gp)
-        # editor page: classes and boxes
+        self.frame_dock.setTitleBarWidget(QWidget())
         ep = QWidget()
         rv = QVBoxLayout(ep)
-        rv.setContentsMargins(6, 6, 6, 6)
-        rv.addWidget(section_label("Class for new boxes (1-9)"))
+        rv.setContentsMargins(10, 4, 10, 6)
+        rv.setSpacing(2)
+        rv.addWidget(section_label("Class for new boxes  (1-9)"))
         self.class_list = QListWidget()
-        self.class_list.setMaximumHeight(170)
+        self.class_list.setMaximumHeight(96)
         self.class_list.currentRowChanged.connect(self.on_class_row)
         rv.addWidget(self.class_list)
         rv.addWidget(section_label("Boxes on this frame"))
         self.box_table = QTableWidget(0, 3)
         self.box_table.setHorizontalHeaderLabels(["class", "conf", "size px"])
         self.box_table.verticalHeader().setVisible(False)
+        self.box_table.verticalHeader().setDefaultSectionSize(22)
         self.box_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.box_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.box_table.setShowGrid(False)
         self.box_table.cellClicked.connect(lambda r, _c: self.canvas.select(r, center=False))
         self.box_table.cellDoubleClicked.connect(lambda r, _c: self.canvas.select(r, center=True))
-        self.box_table.horizontalHeader().setStretchLastSection(True)
+        hh = self.box_table.horizontalHeader()
+        hh.setSectionResizeMode(0, hh.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, hh.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, hh.ResizeMode.ResizeToContents)
+        self.box_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         rv.addWidget(self.box_table, 1)
-        self.frame_pages.addWidget(ep)
-        self.frame_dock.setWidget(self.frame_pages)
+        self.frame_dock.setWidget(ep)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.frame_dock)
 
-    ACTION_TITLES = {"accept_next": "Save + next", "empty_next": "Empty + next", "skip_next": "Skip + next",
-                     "prev": "Previous", "next": "Next", "undo": "Undo", "copy_prev": "Copy previous boxes",
-                     "propagate_prev": "Track previous boxes", "sam_fit": "Fit box with SAM",
-                     "accept_proposals": "Accept all proposals", "commit_page": "Commit page",
+    ACTION_TITLES = {"accept_next": "Save + next", "empty_next": "Empty", "skip_next": "Skip",
+                     "prev": "Previous", "next": "Next", "undo": "Undo", "copy_prev": "Copy prev",
+                     "propagate_prev": "Track prev", "sam_fit": "SAM fit",
+                     "accept_proposals": "Accept all", "commit_page": "Commit page",
                      "prev_page": "Previous page", "next_page": "Next page", "grid_view": "Next view",
-                     "reload": "Reload proposals"}
+                     "reload": "Reload"}
 
     def action_page(self, actions: tuple[str, ...], wide: str) -> QWidget:
         """Buttons that do what the keys do, two per row; the `wide` one (the main action) spans both columns."""
@@ -327,7 +335,8 @@ class MainWindow(QMainWindow):
         """Right, bottom: one-click actions for the current mode and the settings that change what you see."""
         tools = QWidget()
         tv = QVBoxLayout(tools)
-        tv.setContentsMargins(6, 6, 6, 6)
+        tv.setContentsMargins(10, 4, 10, 8)
+        tv.setSpacing(4)
         tv.addWidget(section_label("Actions"))
         self.action_buttons: dict[str, QPushButton] = {}
         self.action_pages = SwitchBox()
@@ -338,56 +347,69 @@ class MainWindow(QMainWindow):
                                                      "accept_next"))
         tv.addWidget(self.action_pages)
 
-        tv.addWidget(section_label("Model proposals"))
+        tv.addWidget(section_label("Proposals from confidence"))
         row = QHBoxLayout()
-        row.addWidget(QLabel("Show from confidence"))
+        row.setSpacing(4)
         self.conf_spin = QDoubleSpinBox()
         self.conf_spin.setRange(0.01, 0.99)
         self.conf_spin.setSingleStep(0.05)
         self.conf_spin.setValue(float(self.settings.value("conf", 0.3)))
+        self.conf_spin.setToolTip("The model's boxes at or above this confidence are the ones you edit; frames where none "
+                                  "reaches it are 'model found nothing' (triage). Applied at once, remembered per project.")
         self.conf_spin.valueChanged.connect(self.on_conf_changed)
+        self.conf_spin.setFixedWidth(64)
         row.addWidget(self.conf_spin)
-        tv.addLayout(row)
-        row = QHBoxLayout()
         for v in CONF_PRESETS:
             b = QPushButton(f"{v:.2f}")
-            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.setProperty("chip", True)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.setToolTip(f"Show proposals from confidence {v:.2f}")
             b.clicked.connect(lambda _=False, x=v: self.conf_spin.setValue(x))
-            row.addWidget(b)
+            row.addWidget(b, 1)
         tv.addLayout(row)
-        tv.addWidget(note_label("Proposals below this are 'weak'. It also decides which frames are in 'Triage: model found "
-                                "nothing' and in the editor list. Applied at once, remembered for this project."))
-        self.weak_check = QCheckBox("Show weak proposals (click one to accept)  W")
+        self.weak_check = QCheckBox("Weak proposals  (W)")
+        self.weak_check.setToolTip("Draw the proposals below the confidence faintly; click one to accept it")
         self.weak_check.toggled.connect(self.on_weak_toggled)
         tv.addWidget(self.weak_check)
 
         tv.addWidget(section_label("Editor helpers"))
-        self.sam_check = QCheckBox("Fit new boxes with SAM")
+        self.sam_check = QCheckBox("SAM-fit new boxes")
         self.sam_check.setToolTip("Every box you draw is snapped to the object by SAM (needs the GPU, game closed)")
         self.sam_check.toggled.connect(lambda v: setattr(self.canvas, "sam_on_draw", v))
-        self.carry_check = QCheckBox("Carry boxes to frames without proposals")
+        self.carry_check = QCheckBox("Carry boxes forward")
         self.carry_check.setToolTip("When the next frame has no proposals and is not reviewed, the previous frame's boxes "
                                     "are tracked onto it")
         tv.addWidget(self.sam_check)
         tv.addWidget(self.carry_check)
         tv.addStretch(1)
-        help_btn = QPushButton("Keyboard and mouse help  (F1)")
+        help_btn = QToolButton()
+        help_btn.setText("Keyboard and mouse help  (F1)")
+        help_btn.setProperty("quiet", True)
         help_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         help_btn.clicked.connect(self.help_dialog)
         tv.addWidget(help_btn)
         dock = QDockWidget("Actions and settings", self)
         dock.setObjectName("tools")
+        dock.setTitleBarWidget(QWidget())
         dock.setWidget(tools)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self.tools_dock = dock
 
     def refresh_action_texts(self) -> None:
         for action, b in self.action_buttons.items():
-            key = self.keymap.first(action)
-            b.setText(f"{self.ACTION_TITLES[action]}   [{key}]" if key else self.ACTION_TITLES[action])
+            key = self.keymap.first(action).replace("Ctrl+", "^").replace("Shift+", "⇧")
+            b.setText(f"{self.ACTION_TITLES[action]}   {key}" if key else self.ACTION_TITLES[action])
             b.setToolTip(ACTION_INFO[action][1] if action in ACTION_INFO else "")
+
+    def apply_panels(self) -> None:
+        """Side panels on / off (Ctrl+B); the box list only exists for the editor."""
+        on = self.panels_visible
+        self.left_dock.setVisible(on)
+        self.tools_dock.setVisible(on)
+        self.frame_dock.setVisible(on and self.mode == "edit")
+
+    def size_docks(self) -> None:
+        self.resizeDocks([self.left_dock, self.tools_dock], [SIDE_WIDTH_LEFT, SIDE_WIDTH_RIGHT], Qt.Orientation.Horizontal)
 
     def build_status_bar(self) -> None:
         self.status_label = QLabel()
@@ -403,8 +425,10 @@ class MainWindow(QMainWindow):
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setVisible(False)
         self.cancel_btn.clicked.connect(self.cancel_job)
+        self.keys_label = QLabel()
         sb = self.statusBar()
         sb.addWidget(self.status_label, 1)
+        sb.addPermanentWidget(self.keys_label)
         sb.addPermanentWidget(self.pos_label)
         sb.addPermanentWidget(self.load_progress)
         sb.addPermanentWidget(self.progress)
@@ -467,6 +491,7 @@ class MainWindow(QMainWindow):
         self.act(m, "Loupe: stronger (also Ctrl+wheel)", lambda: self.do("loupe_in"), "loupe_in")
         self.act(m, "Loupe: weaker", lambda: self.do("loupe_out"), "loupe_out")
         self.act(m, "Fullscreen", lambda: self.do("fullscreen"), "fullscreen")
+        self.act(m, "Hide / show side panels", lambda: self.do("toggle_panels"), "toggle_panels")
         m.addSeparator()
         gm = m.addMenu("Grid tiles per page")
         grp = QActionGroup(self)
@@ -506,15 +531,16 @@ class MainWindow(QMainWindow):
         self.update_status()
 
     def mode_hint(self) -> str:
+        """The keys of the current mode, short, for the status bar."""
         k = self.keymap.first
         if self.mode == "grid":
             if self.grid.sticky:
-                return (f"Click = has objects | Ctrl+click / MMB = skip | wheel zoom, drag pan | {k('commit_page')} commit and "
-                        f"next | {k('prev_page')}/{k('next_page')} previous/next | {k('switch_mode')} editor")
-            return (f"Click = has objects | Ctrl+click / MMB = skip | hold RMB = peek | {k('commit_page')} commit page | "
-                    f"{k('prev_page')}/{k('next_page')} pages | {k('switch_mode')} editor")
-        return (f"Drag = new box | drag a box, corner or edge = move / resize | RMB = delete | wheel = zoom | 1-9 class | "
-                f"{k('accept_next')} save + next | {k('empty_next')} empty | {k('skip_next')} skip | {k('switch_mode')} grid")
+                return (f"click: has objects  |  Ctrl+click: skip  |  wheel: zoom  |  {k('commit_page')}: commit + next  |  "
+                        f"{k('switch_mode')}: editor")
+            return (f"click: has objects  |  Ctrl+click: skip  |  hold RMB: peek  |  {k('commit_page')}: commit page  |  "
+                    f"{k('switch_mode')}: editor")
+        return (f"drag: new box  |  RMB: delete  |  wheel: zoom  |  {k('accept_next')}: save + next  |  {k('empty_next')}: empty  |  "
+                f"{k('skip_next')}: skip  |  {k('switch_mode')}: grid")
 
     # ================================================================ projects
     def recent(self) -> list[str]:
@@ -742,10 +768,9 @@ class MainWindow(QMainWindow):
         self.view_tree.select(self.view_key)
         self.mode_switch.set_mode(mode)
         self.stack.setCurrentWidget(self.grid if mode == "grid" else self.canvas)
-        self.frame_pages.setCurrentIndex(0 if mode == "grid" else 1)
         self.action_pages.setCurrentIndex(0 if mode == "grid" else 1)
-        self.frame_dock.setWindowTitle("This page" if mode == "grid" else "This frame")
         self.context_bar.show_tiles(mode == "grid")
+        self.apply_panels()
         if mode == "grid":
             self.box_table.setRowCount(0)
             self.cur_path = None
@@ -1086,13 +1111,6 @@ class MainWindow(QMainWindow):
         self.grid.clear_cache()
         self.grid.set_page(first // self.grid.per_page)
 
-    @staticmethod
-    def stat_row(n: int, what: str, then: str, color: str) -> str:
-        """One line of the page summary: a big number, what it counts and what committing does with it."""
-        return (f"<table cellspacing='0' cellpadding='3'><tr><td width='46' style='font-size:20pt; font-weight:600; "
-                f"color:{color}'>{n}</td><td><span style='color:{color}'><b>{what}</b></span><br>"
-                f"<span style='color:{T['text3']}'>&rarr; {then}</span></td></tr></table>")
-
     STATUS_WORDS = {"pos": "labeled", "neg": "empty", "skip": "skipped", "todo": "marked", None: "new"}
 
     def update_status(self) -> None:
@@ -1107,11 +1125,13 @@ class MainWindow(QMainWindow):
         decided = c["labeled"] + c["empty"] + c["skipped"]
         self.done_bar.setRange(0, max(n, 1))
         self.done_bar.setValue(decided)
-        self.done_bar.setFormat(f"{decided} of {n} decided  ({100 * decided // max(n, 1)}%)")
-        dots = (("new", "text"), ("marked", "warn"), ("labeled", "ok"), ("empty", "neutral"), ("skipped", "skip"))
-        self.counts_label.setText("&nbsp;&nbsp;".join(f"<span style='color:{T[col]}'>&#9679;</span> <b>{c[k]}</b> {k}"
-                                                   for k, col in dots))
+        dots = (("new", "new", "text"), ("marked", "marked", "warn"), ("labeled", "labeled", "ok"), ("empty", "empty", "neutral"),
+                ("skipped", "skip", "skip"))
+        self.counts_label.setText(f"<b>{decided}</b> of {n} decided ({100 * decided // max(n, 1)}%)<br>"
+                                  + "&nbsp;&nbsp;".join(f"<span style='color:{T[col]}'>&#9679;</span> {c[k]} {word}"
+                                                        for k, word, col in dots if c[k]))
         vd = self.view_def()
+        stats = ""
         if self.mode == "grid":
             g = self.grid
             n_marked = sum(1 for m in g.marks.values() if m == "people")
@@ -1125,11 +1145,9 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"GRID  {vd.label} (shown conf {self.conf_spin.value():.2f}): "
                                       f"{len(self.queue)} frames, page {g.page + 1}/{g.n_pages}  |  marked {n_marked}, "
                                       f"skip {n_skip}{sugg}")
-            self.page_label.setText(
-                self.stat_row(n_marked, "has objects", "go to the editor", T["accent_hi"])
-                + self.stat_row(n_skip, "skip", "set aside, not exported", T["text2"])
-                + self.stat_row(max(n_tiles - n_marked - n_skip, 0), "unmarked", "saved as empty", T["text"])
-                + (f"<p style='color:{T['text3']}'>{sugg.strip(' ()')}</p>" if n_sugg else ""))
+            stats = (f"<span style='color:{T['accent_hi']}'><b>{n_marked}</b> has objects</span>&nbsp;&nbsp;"
+                     f"<span style='color:{T['text2']}'><b>{n_skip}</b> skip</span>&nbsp;&nbsp;"
+                     f"<span style='color:{T['text']}'><b>{max(n_tiles - n_marked - n_skip, 0)}</b> empty</span>")
         elif self.queue and self.cur_path is not None:
             fi = self.queue[self.idx]
             st = self.STATUS_WORDS.get(fi.status, "new")
@@ -1141,7 +1159,8 @@ class MainWindow(QMainWindow):
                                       f"zoom {self.canvas.view.zoom:.1f}x")
         else:
             where = "Editor  |  no frames"
-        self.context_bar.set_text(vd.label, where, vd.hint + "\n" + self.mode_hint())
+        self.context_bar.set_text(vd.label, where, vd.hint, stats if self.mode == "grid" else "")
+        self.keys_label.setText(self.mode_hint())
 
     # ---- the counts next to the views
     def schedule_counts(self) -> None:
@@ -1209,7 +1228,8 @@ class MainWindow(QMainWindow):
             else:
                 self.grid.close_preview()
             return True
-        grid_actions = ("commit_page", "prev_page", "next_page", "grid_view", "switch_mode", "fullscreen", "reload", "goto_frame")
+        grid_actions = ("commit_page", "prev_page", "next_page", "grid_view", "switch_mode", "fullscreen", "reload", "goto_frame",
+                        "toggle_panels")
         for action in self.keymap.actions_for(name):
             if self.mode == "grid" and action not in grid_actions:
                 continue
@@ -1231,6 +1251,9 @@ class MainWindow(QMainWindow):
             self.reload_session()
         elif action == "grid_view":
             self.next_view()
+        elif action == "toggle_panels":
+            self.panels_visible = not self.panels_visible
+            self.apply_panels()
         elif action == "goto_frame":
             self.goto_frame()
         elif self.mode == "grid":

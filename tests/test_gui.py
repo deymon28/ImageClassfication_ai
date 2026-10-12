@@ -628,7 +628,7 @@ def test_session_report_window_opens_the_view_of_a_row(app, project, monkeypatch
     w = MainWindow()
     w.settings.clear()
     open_and_wait(app, w, path)
-    assert "50 ui" in w.status_label.text() and "<b>8</b> new" in w.counts_label.text()
+    assert "50 ui" in w.status_label.text() and " 8 new" in w.counts_label.text()
     seen = {}
 
     def fake_exec(self):  # the user double-clicks the "weak proposals" row, the report closes, the view opens
@@ -777,13 +777,13 @@ def test_views_have_counts_and_the_current_one_is_highlighted(app, project):
     assert "class:0" in tree.items and "class:1" in tree.items
     # the context bar says where you are and what to do
     bar = w.context_bar
-    assert bar.title.text() == "Triage: model found nothing" and "page 1 of 1" in bar.where.text()
-    assert "saved as empty" in bar.hint.text()
+    assert bar.title.text() == "Triage: nothing found" and "page 1 of 1" in bar.where.text()
+    assert "saved as empty" in bar.title.toolTip() and "has objects" in bar.stats.text()
     # a decision updates the counts (debounced) and the progress
     w.grid.toggle(w.queue[0].stem, "skip")
     w.handle_key("Space")
     wait_until(app, lambda: w.counts_by_view.get("skip") == 1)
-    assert w.done_bar.value() == 6 and "6 of 8 decided" in w.done_bar.text()
+    assert w.done_bar.value() == 6 and "<b>6</b> of 8 decided" in w.counts_label.text()
     w.close()
 
 
@@ -922,3 +922,23 @@ def test_grid_and_context_bar_paint_with_the_theme(app, tmp_path):
     bar.set_text("A <b> view", "Grid  |  page 1 of 3  |  9 frames", "hint")
     assert "page 1 of 3" in bar.where.text() and bar.title.text() == "A <b> view"
     g.shutdown()
+
+
+def test_side_panels_can_be_hidden_and_the_editor_panel_is_editor_only(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1400, 900)
+    w.show()
+    app.processEvents()
+    assert w.mode == "grid" and w.left_dock.isVisible() and w.tools_dock.isVisible() and not w.frame_dock.isVisible()
+    w.switch_mode()
+    assert w.frame_dock.isVisible()  # the box list exists only for the editor
+    assert w.handle_key("Ctrl+B")
+    assert not (w.left_dock.isVisible() or w.tools_dock.isVisible() or w.frame_dock.isVisible())
+    assert w.handle_key("Ctrl+B") and w.left_dock.isVisible() and w.frame_dock.isVisible()
+    assert "Space" in w.keys_label.text() or "Return" in w.keys_label.text()
+    w.close()

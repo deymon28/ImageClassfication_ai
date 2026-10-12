@@ -69,7 +69,7 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
    check several for an ensemble (boxes merged with weighted box fusion), the inference size, and optional
    test-time augmentation (horizontal flip + a 1.3x larger scale, fused). Proposals from confidence 0.05 are stored,
    so the shown threshold can be changed later without re-running. GPU: refuses while the game runs, caps VRAM.
-2. **Grid triage** (view *To do > Triage: model found nothing*): frames where the model found nothing come as a page
+2. **Grid triage** (view *To do > Triage: nothing found*): frames where the model found nothing come as a page
    of tiles (weak proposals drawn dotted). Click = has objects, MMB / Ctrl+click = skip, hold the right button = peek at
    the full-size photo (it closes when you let go; a quick click keeps it open, wheel zooms, drag pans), Space = commit
    the page (unmarked frames become empty). With *Tiles* 1 x 1 the tile is the photo itself: wheel zoom and drag pan work
@@ -93,9 +93,10 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
    proposals only, *model disagrees with my labels*: confident proposals without a label, labels without a proposal),
    **Done** (labeled, empty, skipped), **Browse** (all frames, by class). The **Grid | Editor** switch decides how the
    highlighted view is shown; each view remembers its last mode. A frame is *new* (no decision), *marked* ('has objects'
-   ticked in the grid, boxes still to do), *labeled*, *empty* or *skipped*. The bar above the work area always says
-   which view, which mode, where in it and what you can do; actions confirm themselves with a short message over the
-   image (*Saved: 2 boxes*, *Page saved: ...*).
+   ticked in the grid, boxes still to do), *labeled*, *empty* or *skipped*. The thin bar above the work area says
+   which view and where in it (the keys of the mode are in the status bar, F1 lists them all); actions confirm
+   themselves with a short message over the image (*Saved: 2 boxes*, *Page saved: ...*). *Ctrl+B* hides the side
+   panels for more room.
 6. **Export** (*File > Export*, `python -m framelabel export projects\abi.yaml`): all labeled frames plus a share of
    empty ones (half of them the model's hardest false positives); validation = random 2-minute time blocks of every
    session, chosen so every class's val share is close to the target (neighbouring frames are near-duplicates, so a
@@ -148,9 +149,9 @@ group of the view list and the status bar carry the same numbers.
 * **The recorder** (ImageHook, `ui_filter`) drops interface screens, duplicates and non-game frames *before* saving;
   its counts are read from the session's `capture.json`. These frames are not on disk and cannot be reviewed here
   (record with `ui_filter` off to keep them).
-* **Suspected interface screens** (framelabel's own detection, view *Check > Looks like an interface screen*): pre-marked SKIP; the status line says how
+* **Suspected interface screens** (framelabel's own detection, view *Check > Interface screens*): pre-marked SKIP; the status line says how
   many frames of the page are pre-marked, a click on a tile undoes the mark.
-* **Proposals hidden by ignore zones** (view *Check > Seen only in an ignore zone*): the model detected something only inside an ignore zone
+* **Proposals hidden by ignore zones** (view *Check > Only in ignore zone*): the model detected something only inside an ignore zone
   (the HUD icon), so the frame looks empty; the hidden boxes are drawn in cyan.
 * **Weak proposals** (view *Check > Weak proposals only*): below the shown confidence; dotted boxes, `W` in the editor shows them.
 * **Dropped classes**: model classes without a project class (`class_map`) are not written; a prelabel run records the

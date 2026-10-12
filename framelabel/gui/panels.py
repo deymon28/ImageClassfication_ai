@@ -16,7 +16,9 @@ GRID_SIZES = ((1, 1), (2, 1), (1, 2), (2, 2), (3, 3), (4, 3), (4, 4), (5, 4))
 DIM = qc("text3")
 
 
-def grid_size_text(cols: int, rows: int) -> str:
+def grid_size_text(cols: int, rows: int, short: bool = False) -> str:
+    if short:
+        return f"{cols} × {rows}" + ("  photo" if cols * rows == 1 else "")
     note = "  (one photo per page)" if cols * rows == 1 else f"  ({cols * rows} per page)"
     return f"{cols} × {rows}{note}"
 
@@ -178,8 +180,8 @@ class ModeSwitch(QWidget):
         self.setObjectName("segTrack")  # styled in theme.py: a track with one coloured segment
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(3, 3, 3, 3)
-        lay.setSpacing(3)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(2)
         self.group = QButtonGroup(self)
         self.buttons: dict[str, QPushButton] = {}
         for mode, text, tip in (("grid", "Grid", "Many frames at once: triage by clicking tiles"),
@@ -204,7 +206,8 @@ class ModeSwitch(QWidget):
 
 
 class ContextBar(QFrame):
-    """Always visible above the work area: which view, which mode, where in it, and what you can do here."""
+    """One thin row above the work area: which view, where in it, and (in the grid) what the page will do. The
+    description of the view is its tooltip; the keys of the mode are in the status bar."""
 
     grid_size_chosen = pyqtSignal(int, int)
 
@@ -213,31 +216,24 @@ class ContextBar(QFrame):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setObjectName("contextBar")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 10, 16, 10)
-        lay.setSpacing(3)
-        top = QHBoxLayout()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 5, 8, 5)
+        lay.setSpacing(10)
         self.title = QLabel()
         self.title.setProperty("role", "title")
         self.where = QLabel()
         self.where.setTextFormat(Qt.TextFormat.RichText)
-        self.tiles_label = QLabel("Tiles")
-        self.tiles_label.setProperty("role", "muted")
+        self.stats = QLabel()
+        self.stats.setTextFormat(Qt.TextFormat.RichText)
         self.tiles = QComboBox()
         for c, r in GRID_SIZES:
-            self.tiles.addItem(grid_size_text(c, r), f"{c}x{r}")
-        self.tiles.setToolTip("How many frames the grid shows per page")
+            self.tiles.addItem(grid_size_text(c, r, short=True), f"{c}x{r}")
+        self.tiles.setToolTip("Tiles per page")
         self.tiles.activated.connect(lambda i: self.grid_size_chosen.emit(*map(int, self.tiles.itemData(i).split("x"))))
-        top.addWidget(self.title)
-        top.addSpacing(14)
-        top.addWidget(self.where, 1)
-        top.addWidget(self.tiles_label)
-        top.addWidget(self.tiles)
-        lay.addLayout(top)
-        self.hint = QLabel()
-        self.hint.setWordWrap(True)
-        self.hint.setProperty("role", "muted")
-        lay.addWidget(self.hint)
+        lay.addWidget(self.title)
+        lay.addWidget(self.where, 1)
+        lay.addWidget(self.stats)
+        lay.addWidget(self.tiles)
 
     def set_grid_size(self, cols: int, rows: int) -> None:
         i = self.tiles.findData(f"{cols}x{rows}")
@@ -246,14 +242,15 @@ class ContextBar(QFrame):
 
     def show_tiles(self, on: bool) -> None:
         self.tiles.setVisible(on)
-        self.tiles_label.setVisible(on)
+        self.stats.setVisible(on)
 
-    def set_text(self, title: str, where: str, hint: str) -> None:
+    def set_text(self, title: str, where: str, hint: str, stats: str = "") -> None:
         self.title.setText(title)
-        head, *rest = [html.escape(p) for p in where.split("  |  ")]
-        sep = f" <span style='color:{T['text3']}'>&nbsp;/&nbsp;</span> "
-        self.where.setText(f"<b style='color:{T['accent_hi']}'>{head}</b>" + (sep + sep.join(rest) if rest else ""))
-        self.hint.setText(hint)
+        self.title.setToolTip(hint)
+        parts = [html.escape(p) for p in where.split("  |  ")]
+        sep = f"<span style='color:{T['text3']}'>&nbsp;&middot;&nbsp;</span>"
+        self.where.setText(f"<span style='color:{T['text2']}'>" + sep.join(parts) + "</span>")
+        self.stats.setText(stats)
 
 
 class Toast(QLabel):

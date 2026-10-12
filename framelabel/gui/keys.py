@@ -29,6 +29,7 @@ DEFAULT_KEYMAP: dict[str, list[str]] = {
     "switch_mode": ["Tab", "G"],
     "grid_view": ["V"],
     "fullscreen": ["F11"],
+    "toggle_panels": ["Ctrl+B"],
     "save": ["Ctrl+S"],
     "reload": ["F5"],
     "goto_frame": ["Ctrl+G"],
@@ -66,6 +67,7 @@ ACTION_INFO: dict[str, tuple[str, str]] = {
     "switch_mode": ("Everywhere", "Switch between grid and editor"),
     "grid_view": ("Everywhere", "Next view in the list"),
     "fullscreen": ("Everywhere", "Fullscreen on / off"),
+    "toggle_panels": ("Everywhere", "Hide / show the side panels (more room for the photos)"),
     "reload": ("Everywhere", "Re-read proposals and new frames"),
     "goto_frame": ("Everywhere", "Go to a frame by number or name"),
 }

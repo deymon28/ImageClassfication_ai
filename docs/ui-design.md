@@ -22,11 +22,11 @@ A frame is **new** (no decision), **marked** ("has objects" ticked in the grid, 
 Defined in `framelabel/core/views.py` (one place: label, group, default mode, description; counts are computed in a
 background thread, debounced after each decision). The rules of each view are in `core/queues.py`.
 
-* **To do** - only frames without a decision, so what is left is always visible: *Triage: model found nothing*,
-  *Label: proposals and marked*, *Marked, boxes still to do*, *Unsure proposals first*, *Small (far) objects first*,
+* **To do** - only frames without a decision, so what is left is always visible: *Triage: nothing found*,
+  *To label*, *Marked in grid*, *Unsure first*, *Small objects first*,
   *All new frames*.
-* **Check** - things that need a second look: *Looks like an interface screen*, *Seen only in an ignore zone*,
-  *Weak proposals only* (all three: new frames) and *Model disagrees with my labels* (decided frames).
+* **Check** - things that need a second look: *Interface screens*, *Only in ignore zone*,
+  *Weak proposals only* (all three: new frames) and *Disagrees with labels* (decided frames).
 * **Done** - the decisions: *Labeled*, *Empty*, *Skipped*.
 * **Browse** - *All frames*, *Has class X*.
 
@@ -36,16 +36,22 @@ decision").
 
 ## Panels
 
-* **Left**: session (+ *Report*), a progress bar of decided frames with the per-status counts, the Grid | Editor switch,
-  the views, the frames of the current view (with a filter).
-* **Right, top** ("This frame" / "This page"): editor: class for new boxes, the boxes of the frame; grid: what
-  committing the page will do (n objects -> editor, n skip, n empty).
-* **Right, bottom** ("Actions and settings"): buttons for the actions of the current mode (they show their key),
-  the shown confidence with presets (applied at once, remembered per project), weak proposals, editor helpers, help.
+The photos are the product, so the chrome is small: the side panels are narrow (about 224 and 236 px, 71% of a
+1600 px window is photo), have no title bars, and *Ctrl+B* hides them (100% photo).
+
+* **Top row** (one line): the view, where in it (`Grid / page 3 of 70 / 630 frames`, `Editor / frame 5 of 80 /
+  name / status`), in the grid what the page will do (`3 has objects  9 skip  0 empty`) and the tiles per page. The
+  description of the view is the tooltip of its title.
+* **Left**: session (+ *Report*), a thin progress bar with the counts of decided frames, the Grid | Editor switch, the
+  views, the frames of the current view with a filter.
+* **Right, top** (editor only): class for new boxes, the boxes of the frame.
+* **Right, bottom**: buttons for the actions of the current mode (they show their key; the main one is coloured),
+  the shown confidence with presets (applied at once, remembered per project), weak proposals, editor helpers.
+* **Status bar**: the technical line on the left, the keys of the current mode on the right.
 * **Menus**: File (projects, export), Edit, View, Auto-label, **Settings** (project, keyboard shortcuts, performance:
-  all of them take effect immediately), Help (F1: keys and mouse for each mode, generated from the current keymap).
-* **Feedback**: every action that changes data confirms itself with a toast over the work area; the status bar keeps
-  the technical line. Grid with 1 x 1 tiles is the photo itself (zoom and pan without a right click).
+  all take effect immediately), Help (F1: keys and mouse for each mode, generated from the current keymap).
+* **Feedback**: every action that changes data confirms itself with a toast over the work area. Grid with 1 x 1
+  tiles is the photo itself (zoom and pan without a right click).
 
 ## Where the principles come from
 
@@ -62,10 +68,17 @@ decision").
 
 ## Look
 
-One dark theme in `framelabel/gui/theme.py`: design tokens (`T`: three background levels, text levels, one blue accent,
-status colours), the palette and a single style sheet; the painted canvas and grid use the same tokens. Widgets are
-styled by class, by object name (`#contextBar`, `#segTrack`, `#toast`) or by a `role` / `primary` property, never
-inline. Rules: the accent colour means "this is where you are / what you chose" (the selected view, the active mode,
-the main action, tiles marked *has objects*); status colours are used only for statuses (labeled green, marked amber,
-skipped orange, empty grey); one radius family (6-10 px), thin borders, no shadows. Icons the style sheet needs
-(checkmark, chevrons) are small SVGs written to the per-user data folder at start.
+One dark theme in `framelabel/gui/theme.py`: design tokens (`T`: near-black surfaces in four steps, three text levels,
+one blue accent, status colours), the palette and a single style sheet; the painted canvas and grid use the same
+tokens. Widgets are styled by class, by object name (`#contextBar`, `#segTrack`, `#toast`) or by a property (`role`,
+`primary`, `chip`, `quiet`), never inline. Rules:
+
+* Quiet chrome: hairline borders, no frames around lists, no shadows, 9 pt type, controls about 24 px high.
+* The accent colour means "you are here / you chose this" (the selected view, the active mode, the main action, tiles
+  marked *has objects*); status colours are used only for statuses (labeled green, marked amber, skipped orange,
+  empty grey).
+* Nothing explains what the user already knows: descriptions are tooltips, keys are in the status bar and in F1.
+* Icons the style sheet needs (checkmark, chevrons) are small SVGs written to the per-user data folder at start.
+
+The first version of the theme spent the centre on bigger type, a three-line header and 300 px panels; measuring
+the share of the window the photo gets (63% then, 71% now) is the check to repeat after any layout change.
