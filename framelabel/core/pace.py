@@ -15,7 +15,7 @@ class Pace:
         self.events: deque[tuple[float, int]] = deque()
 
     def add(self, n: int = 1) -> None:
-        if n > 0:
+        if n != 0:  # a negative n takes back decisions that were undone
             self.events.append((self.clock(), n))
             self.trim()
 
@@ -30,7 +30,7 @@ class Pace:
     def per_minute(self) -> float | None:
         """Decisions per minute over the recent window, None while there is too little to tell."""
         self.trim()
-        total = sum(n for _t, n in self.events)
+        total = max(0, sum(n for _t, n in self.events))
         if total < MIN_EVENTS or not self.events:
             return None
         span = max(self.clock() - self.events[0][0], MIN_SPAN_S)

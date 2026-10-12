@@ -1562,3 +1562,39 @@ def test_the_end_of_label_sees_the_frame_it_just_sent_to_review(app, project):
     assert "End of Label." in text and "Next: Review, 1 frames" in text and "Nothing else" not in text
     assert w.central.toast.button.text() == "Go to Review"
     w.close()
+
+
+def test_grid_ticks_survive_paging_and_a_double_right_click_closes_the_photo(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, _s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1200, 800)
+    w.show()
+    app.processEvents()
+    g = w.grid
+    g.cols, g.rows = 2, 2
+    g.set_page(0)
+    stem = g.page_items()[0].stem
+    g.toggle(stem, "people")
+    g.set_page(1)
+    g.set_page(0)
+    assert g.marks.get(stem) == "people"  # paging without saving does not drop the tick
+    w.commit_grid_page()
+    assert stem not in g.marks and w.ws.review.get(stem) == "todo"  # saved: the status shows now, not a pending tick
+    g.set_page(0)
+    assert g.pending(g.page_items()[0]) is None
+
+
+def test_corrupt_checked_note_is_ignored(app, project):
+    from framelabel.core import checked
+    from framelabel.core.session import Session
+
+    _path, s = project
+    session = Session.open(s)
+    p = checked.checked_path(session)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text('{"stems": null}')
+    assert checked.load_checked(session) == set()

@@ -1326,6 +1326,8 @@ class MainWindow(WorkflowMixin, QMainWindow):
             del self.undo_pages[:-20]
         if undo:
             self.record_decisions(len(undo))
+        for stem in stems:
+            g.marks.pop(stem, None)  # saved: the tile shows the status now, not a pending mark
         self.schedule_counts()
         for i in range(g.page * g.per_page, min((g.page + 1) * g.per_page, len(self.queue))):
             self.queue[i] = self.ws.index[self.ws.by_stem[self.queue[i].stem]]
@@ -1356,12 +1358,14 @@ class MainWindow(WorkflowMixin, QMainWindow):
         entry = self.undo_pages.pop()
         self.commit_current()
         restored, left = self.ws.undo_page(entry["undo"])
+        self.pace.add(-len(restored))
         self.ws.uncheck(entry["checked"])
         self.schedule_counts()
         view = entry["view"] if entry["view"] in self.view_tree.items else "triage"
         self.set_mode("grid", queue=view, keep_stem=entry["stem"])
         on_page = {fi.stem for fi in self.grid.page_items()}
-        self.grid.marks.clear()
+        for stem in on_page:
+            self.grid.marks.pop(stem, None)
         self.grid.marks.update({k: m for k, m in entry["marks"].items() if k in on_page and k not in left})
         self.grid.update()
         self.update_status()

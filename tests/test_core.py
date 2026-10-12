@@ -752,3 +752,15 @@ def test_pace_needs_enough_decisions_and_forgets_old_ones():
     now[0] += 700  # everything is older than ten minutes now
     assert pace.per_minute() is None
     assert format_minutes(0.3) == "under a minute" and format_minutes(80) == "1 h 20 min" and format_minutes(3000) == "2 d 2 h"
+
+
+def test_pace_takes_back_undone_decisions():
+    from framelabel.core.pace import Pace
+
+    t = [0.0]
+    p = Pace(clock=lambda: t[0])
+    p.add(30)
+    t[0] = 60.0
+    assert p.per_minute() is not None
+    p.add(-30)
+    assert p.per_minute() is None  # nothing left to measure

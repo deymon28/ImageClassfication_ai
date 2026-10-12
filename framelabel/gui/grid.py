@@ -130,11 +130,14 @@ class Grid(QWidget):
             if img is not None:
                 self.aspect = img.shape[:2]
         self.initial_mark = initial_mark or (lambda fi: None)
+        self.marks = {}  # a new list of frames starts without ticks
         self.set_page(page)
 
     def set_page(self, page: int) -> None:
         self.page = min(max(page, 0), self.n_pages - 1)
-        self.marks = {fi.stem: m for fi in self.page_items() if (m := self.initial_mark(fi))}
+        for fi in self.page_items():  # ticks not saved yet survive paging; a page seen for the first time starts from its status
+            if fi.stem not in self.marks and (m := self.initial_mark(fi)):
+                self.marks[fi.stem] = m
         self.close_preview()
         if self.sticky and self.items:
             self.open_preview(self.page_items()[0])
@@ -471,6 +474,9 @@ class Grid(QWidget):
     def mouseDoubleClickEvent(self, e) -> None:
         """A plain double-click opens the frame in the editor. The first click of the pair already ticked the tile, so it is
         ticked back (the same kind of mark, which Ctrl and the middle button change); only the plain click opens."""
+        if e.button() == Qt.MouseButton.RightButton:
+            self.mousePressEvent(e)  # the second press of a quick double right-click closes the photo the first one opened
+            return
         left = e.button() == Qt.MouseButton.LeftButton
         skip = e.button() == Qt.MouseButton.MiddleButton or (left and bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier))
         if not (left or skip):

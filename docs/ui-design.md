@@ -32,6 +32,7 @@ remembers how you last looked at it). Double-click a tile (or O) opens it in the
 * **Saving a grid page never changes a labeled frame**: labeled tiles are locked in the grid, and the workspace ignores
   them even for a stale mark; a labeled frame is changed in the editor. Marks that were not saved yet survive a
   rebuild (a switch to the editor and back) only for frames whose decision did not change meanwhile.
+* Ticks not saved yet stay when you page back and forth; saving the page turns them into statuses.
 * **Undoing a page never undoes later work**: only the frames that are still as the save left them are restored; a
   frame that was labeled or decided again since stays as it is (the toast says how many).
 

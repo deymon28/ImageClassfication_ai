@@ -23,7 +23,7 @@ def load_checked(session: Session) -> set[str]:
     try:
         data = json.loads(checked_path(session).read_text(encoding="utf-8"))
         return {str(s) for s in data.get("stems", [])}
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, TypeError):
         return set()
 
 
