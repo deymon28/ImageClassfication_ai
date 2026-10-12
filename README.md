@@ -70,8 +70,9 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
    test-time augmentation (horizontal flip + a 1.3x larger scale, fused). Proposals from confidence 0.05 are stored,
    so the shown threshold can be changed later without re-running. GPU: refuses while the game runs, caps VRAM.
 2. **Grid triage**: frames where the model found nothing come as a page of tiles (weak proposals drawn dotted).
-   LMB = has objects, MMB/Ctrl+LMB = skip, RMB = full-size zoomable preview, Space = commit the page (unmarked
-   frames become empty). Grid views: model found nothing, suspected interface screens, saved as empty, skipped, all.
+   LMB = has objects, MMB/Ctrl+LMB = skip, RMB = full-size zoomable preview (hold it to peek: the photo closes when you let go; a quick
+   click opens it and the next click closes it), Space = commit the page (unmarked
+   frames become empty). *View > Grid size* offers 1x1, 2x1, 1x2, 2x2 ... 5x4 tiles per page. Grid views: model found nothing, suspected interface screens, saved as empty, skipped, all.
 3. **Editor**: proposals are dashed boxes with their confidence; drag on empty space = new box, drag a box = move,
    drag a corner or an edge = resize, RMB = delete, wheel = zoom at cursor, MMB drag = pan. Space = accept and next,
    E = empty, X = skip, A/D = previous/next, N = next unreviewed, Ctrl+Z / Ctrl+Y = undo/redo, R = back to the model's

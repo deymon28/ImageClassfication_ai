@@ -309,7 +309,7 @@ class MainWindow(QMainWindow):
         self.act(m, "Fullscreen", lambda: self.do("fullscreen"), "fullscreen")
         gm = m.addMenu("Grid size")
         grp = QActionGroup(self)
-        for cols, rows in ((2, 2), (3, 3), (4, 3), (4, 4), (5, 4)):
+        for cols, rows in ((1, 1), (2, 1), (1, 2), (2, 2), (3, 3), (4, 3), (4, 4), (5, 4)):
             a = QAction(f"{cols} x {rows}", self, checkable=True)
             a.triggered.connect(lambda _=False, c=cols, r=rows: self.set_grid_size(c, r))
             grp.addAction(a)
@@ -328,7 +328,7 @@ class MainWindow(QMainWindow):
     def update_help(self) -> None:
         k = self.keymap.first
         if self.mode == "grid":
-            text = (f"GRID: LMB has objects | MMB / Ctrl+LMB skip | RMB full view | {k('commit_page')} commit page | "
+            text = (f"GRID: LMB has objects | MMB / Ctrl+LMB skip | RMB hold = peek (click = keep open) | {k('commit_page')} commit page | "
                     f"{k('prev_page')}/{k('next_page')} pages | {k('grid_view')} next view | {k('switch_mode')} editor")
         else:
             text = (f"EDITOR: drag = new box, drag box/corner/edge = move/resize, RMB delete, wheel zoom, MMB pan | "

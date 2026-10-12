@@ -3,6 +3,7 @@ RMB opens a full-size preview (wheel zoom, drag pan, click toggles the mark). Co
 frames as empty, marked ones go to the edit queue, skip marks are saved as skipped."""
 from __future__ import annotations
 
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from framelabel.core.view import View
 from .canvas import to_qimage
 
 GAP = 6
+PEEK_HOLD_S = 0.3  # a right button held longer than this is a 'peek': the photo closes when the button is released
 RESIZE_SETTLE_MS = 150  # while the window is being resized the tiles of the old size are stretched instead of reloaded
 
 
@@ -65,6 +67,7 @@ class Grid(QWidget):
         self.preview_q: QImage | None = None
         self.preview_view: View | None = None
         self.press: QPointF | None = None
+        self.peek_since: float | None = None  # when the right button opened the preview; None if it did not
         self.last: QPointF | None = None
         self.title = ""
         self.message = ""  # shown instead of the tiles when there are none (e.g. while a session loads)
@@ -275,7 +278,7 @@ class Grid(QWidget):
 
     def close_preview(self) -> None:
         self.preview = self.preview_img = self.preview_q = self.preview_view = None
-        self.press = None
+        self.press = self.peek_since = None
         self.update()
 
     # ---------------- mouse
@@ -299,6 +302,7 @@ class Grid(QWidget):
             self.toggle(fi.stem, "people")
         elif e.button() == Qt.MouseButton.RightButton:
             self.open_preview(fi)
+            self.peek_since = time.monotonic()  # held: closes on release; a quick click leaves it open (click again to close)
 
     def mouseMoveEvent(self, e) -> None:
         pos = e.position()
@@ -315,6 +319,12 @@ class Grid(QWidget):
 
     def mouseReleaseEvent(self, e) -> None:
         pos = e.position()
+        if e.button() == Qt.MouseButton.RightButton and self.peek_since is not None:
+            held = time.monotonic() - self.peek_since
+            self.peek_since = None
+            if self.preview is not None and held >= PEEK_HOLD_S:
+                self.close_preview()  # a peek: the button was held, so letting go closes the photo
+            return
         if self.preview is not None and self.press is not None:
             moved = abs(pos.x() - self.press.x()) + abs(pos.y() - self.press.y())
             self.press = None

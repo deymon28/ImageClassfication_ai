@@ -647,3 +647,91 @@ def test_session_report_window_opens_the_view_of_a_row(app, project, monkeypatch
     w.set_mode("grid", queue="triage")
     assert not w.grid.show_ignored
     w.close()
+
+
+def make_grid(app, tmp_path, cols, rows, n=6):
+    from framelabel.core.queues import FrameInfo
+    from framelabel.gui.grid import Grid
+
+    items = []
+    for i in range(n):
+        f = tmp_path / f"{i:06d}.jpg"
+        cv2.imwrite(str(f), np.full((90, 160, 3), 30 * i, np.uint8))
+        items.append(FrameInfo(f))
+    g = Grid()
+    g.cols, g.rows = cols, rows
+    g.resize(640, 360)
+    g.show()
+    app.processEvents()
+    wait_until(app, lambda: not g.resizing)
+    g.set_items(items, 0)
+    return g
+
+
+def tile_center(g, i):
+    from PyQt6.QtCore import QPoint
+
+    x0, y0, tw, th = g.layout_now()
+    from framelabel.gui.grid import GAP
+
+    return QPoint(int(x0 + (i % g.cols) * (tw + GAP) + tw / 2), int(y0 + (i // g.cols) * (th + GAP) + th / 2))
+
+
+def test_right_button_hold_peeks_and_click_toggles(app, tmp_path):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+
+    from framelabel.gui.grid import PEEK_HOLD_S
+
+    g = make_grid(app, tmp_path, 3, 2)
+    RMB, NO = Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier
+    pos = tile_center(g, 1)
+    # hold: opens on press, closes on release
+    QTest.mousePress(g, RMB, NO, pos)
+    assert g.preview is not None and g.preview.stem == "000001"
+    time.sleep(PEEK_HOLD_S + 0.1)
+    QTest.mouseRelease(g, RMB, NO, pos)
+    assert g.preview is None
+    # quick click: stays open; the next right click closes it
+    QTest.mouseClick(g, RMB, NO, pos)
+    assert g.preview is not None and g.preview.stem == "000001"
+    QTest.mousePress(g, RMB, NO, pos)
+    assert g.preview is None
+    QTest.mouseRelease(g, RMB, NO, pos)  # the release of the closing click must not reopen or break anything
+    assert g.preview is None and g.peek_since is None
+    # a left click while peeking marks the frame (the preview closes as before), the right release is harmless
+    QTest.mousePress(g, RMB, NO, pos)
+    QTest.mouseClick(g, Qt.MouseButton.LeftButton, NO, pos)
+    assert g.marks.get("000001") == "people" and g.preview is None
+    QTest.mouseRelease(g, RMB, NO, pos)
+    assert g.preview is None
+    g.shutdown()
+
+
+def test_grid_sizes_1x1_2x1_1x2(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, _ = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1400, 900)
+    w.show()
+    from PyQt6.QtGui import QAction
+
+    labels = [a.text() for a in w.findChildren(QAction)]
+    for cols, rows in ((1, 1), (2, 1), (1, 2)):
+        w.set_grid_size(cols, rows)
+        g = w.grid
+        assert (g.cols, g.rows, g.per_page) == (cols, rows, cols * rows)
+        assert g.n_pages == -(-len(w.queue) // (cols * rows))
+        g.repaint()
+        wait_until(app, lambda: g.tiles(*g.layout_now()[2:]) is not None)
+        x0, y0, tw, th = g.layout_now()
+        assert tw > 100 and th > 50 and x0 >= 0 and y0 >= 0  # one big tile fits the area
+        last = tile_center(g, min(cols * rows, len(w.queue)) - 1)  # every tile of the page can be hit
+        assert g.tile_at(tile_center(g, 0).x(), tile_center(g, 0).y()) == 0
+        assert g.tile_at(last.x(), last.y()) == cols * rows - 1
+    assert any("1 x 1" in t for t in labels) and any("2 x 1" in t for t in labels) and any("1 x 2" in t for t in labels)
+    assert w.settings.value("grid") == "1x2"
+    w.close()
