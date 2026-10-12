@@ -112,8 +112,8 @@ Proposals are dashed boxes with a confidence number. They are **suggestions, not
   selected box).
 * **Delete wrong boxes:** HUD icons (the body-status silhouette), reflections, posters, loot, duplicates (two boxes on
   the same person) with RMB.
-* **Look for what the model missed.** The views *Disagrees with labels*, *Small objects first* and weak proposals (W) exist for
-  this. Far people and people in shadow are the typical misses.
+* **Look for what the model missed.** The Review stage (*Possibly missed*, *Possibly wrong*, *Small objects*), the sort *Small objects first*
+  in Label and weak proposals (W) exist for this. Far people and people in shadow are the typical misses.
 * **A high confidence is not a reason to skip checking.** A 0.9 box on a corpse labeled `enemy` is still wrong.
 * **A low confidence is not a reason to delete.** A 0.2 box on a real far person is correct.
 * **Ignore zone:** boxes whose centre lies in the ignore zone (the HUD silhouette icon bottom-left) are hidden by

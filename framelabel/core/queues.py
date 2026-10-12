@@ -4,9 +4,14 @@ Queues are ordered lists of frames to walk through:
   all         every frame in time order
   triage      the model found nothing (shown as a grid: confirm empty frames a page at a time)
   edit        frames with proposals, or marked 'has objects' in the grid, or labeled/skipped before
+  proposals   new frames with a proposal at the shown confidence
   uncertain   unreviewed frames with proposals in the uncertain confidence band, most uncertain first
   small       frames with small (far) objects in proposals or labels, smallest first
   disagree    reviewed frames where the model disagrees with the labels (possible missed or wrong boxes)
+  review      decided frames that deserve a second look: missed / extra / smalllab (checked ones left out)
+  missed      decided frames where a confident proposal has no label (a possibly missed object)
+  extra       decided frames with a label that has no proposal (possibly wrong, or a hard object)
+  smalllab    labeled frames with a small (far) object
   unreviewed / pos / neg / skip / todo   by review status
   class:<i>   frames whose labels contain class i
   ui          suspected interface screens
@@ -24,8 +29,8 @@ from .boxes import iou_matrix, parse_rows, in_zones
 from .index_cache import read_rows_cached
 from .session import Review, Session
 
-QUEUES = ("edit", "triage", "uncertain", "small", "disagree", "all", "unreviewed", "todo", "pos", "neg", "skip", "ui", "zone",
-          "weak")
+QUEUES = ("edit", "triage", "proposals", "uncertain", "small", "disagree", "review", "missed", "extra", "smalllab", "all",
+          "unreviewed", "todo", "pos", "neg", "skip", "ui", "zone", "weak")
 
 
 @dataclass
@@ -108,28 +113,78 @@ def uncertainty(confs: list[float], low: float, high: float) -> float:
     return 1.0 - min(abs(c - mid) for c in band) / half
 
 
-def disagreement(fi: FrameInfo, conf: float, iou: float = 0.4) -> float:
-    """Unmatched confident proposals (likely missed objects) + unmatched labels (likely wrong or missed by the model,
-    weighted lower)."""
+def disagreement_parts(fi: FrameInfo, conf: float, iou: float = 0.4) -> tuple[int, int]:
+    """(proposals without a label, labels without a proposal) of a decided frame: the first are objects the labels
+    may have missed, the second boxes the model does not see (misplaced, or just hard objects)."""
     if fi.status not in ("pos", "neg"):
-        return 0.0
+        return 0, 0
     props = fi.prop_xyxy[np.array(fi.confs) >= conf] if fi.prop_xyxy is not None and len(fi.confs) else np.zeros((0, 4))
     labels = fi.label_xyxy if fi.label_xyxy is not None else np.zeros((0, 4))
     if not len(props) and not len(labels):
-        return 0.0
+        return 0, 0
     if not len(props) or not len(labels):
-        return float(len(props)) + 0.5 * len(labels)
+        return len(props), len(labels)
     m = iou_matrix(props, labels) >= iou
-    return float((~m.any(1)).sum()) + 0.5 * float((~m.any(0)).sum())
+    return int((~m.any(1)).sum()), int((~m.any(0)).sum())
 
 
-GRID_PENDING = ("triage", "ui", "zone")  # grid views of frames still to decide: any status means it was decided
-EDITOR_PENDING = ("edit", "small")        # editor views: labeled / empty / skipped frames are done, 'todo' still waits
+def disagreement(fi: FrameInfo, conf: float, iou: float = 0.4) -> float:
+    """Unmatched confident proposals (likely missed objects) + unmatched labels (likely wrong or missed by the model,
+    weighted lower)."""
+    missed, extra = disagreement_parts(fi, conf, iou)
+    return float(missed) + 0.5 * extra
+
+
+def unmatched_proposals(fi: FrameInfo, conf: float, iou: float = 0.4) -> np.ndarray:
+    """Normalized xyxy rows of the proposals at or above `conf` that no label of a decided frame covers (what the model
+    sees and the labels do not); every proposal at or above `conf` of a frame without labels."""
+    if fi.prop_xyxy is None or not len(fi.confs):
+        return np.zeros((0, 4))
+    strong = fi.prop_xyxy[np.array(fi.confs) >= conf]
+    if fi.status not in ("pos", "neg") or not len(strong) or fi.label_xyxy is None or not len(fi.label_xyxy):
+        return strong
+    return strong[~(iou_matrix(strong, fi.label_xyxy) >= iou).any(1)]
+
+
+def smallest_height(f: FrameInfo, band: tuple[float, float] = (0.15, 0.6)) -> float:
+    """Height (share of the image) of the smallest object of a frame: of its labels once it is decided, else of its
+    proposals from the band's lower edge up; 1.0 when it has none."""
+    hs = f.label_h if f.status in ("pos", "neg") else [h for h, c in zip(f.prop_h, f.confs) if c >= band[0]]
+    return min(hs, default=1.0)
+
+
+SORTS = (("time", "Time order"), ("unsure", "Unsure first"), ("small", "Small objects first"))
+
+
+def sort_frames(frames: list[FrameInfo], sort: str, band: tuple[float, float] = (0.15, 0.6)) -> list[FrameInfo]:
+    """Another walking order for the same frames: 'unsure' puts the frames whose proposals are closest to the middle of
+    the confidence band first, 'small' the ones with the smallest (farthest) objects; ties keep the time order."""
+    if sort == "unsure":
+        return sorted(frames, key=lambda f: -uncertainty(f.confs, *band))
+    if sort == "small":
+        return sorted(frames, key=lambda f: smallest_height(f, band))
+    return list(frames)
+
+
+def review_flags(index: list[FrameInfo], conf: float, checked=frozenset()) -> dict[str, tuple[int, int, float]]:
+    """stem -> (missed, extra, smallest label height) of every decided frame that was not marked as checked."""
+    thr = max(conf, 0.5)
+    out = {}
+    for f in index:
+        if f.status in ("pos", "neg") and f.stem not in checked:
+            missed, extra = disagreement_parts(f, thr)
+            out[f.stem] = (missed, extra, min(f.label_h, default=1.0) if f.status == "pos" else 1.0)
+    return out
+
+
+GRID_PENDING = ("triage", "ui", "zone")        # grid views of frames still to decide: any status means it was decided
+EDITOR_PENDING = ("edit", "small", "proposals")  # editor views: labeled / empty / skipped frames are done, 'todo' still waits
+REVIEW_QUEUES = ("review", "missed", "extra", "smalllab")  # decided frames that deserve a second look
 
 
 def hide_reviewed_frames(frames: list[FrameInfo], name: str) -> list[FrameInfo]:
     """Drop the frames that were already decided from the queues that are meant for work still to do (the views of
-    a status, 'all' and 'disagree' - which is about reviewed frames - are left alone)."""
+    a status, 'all' and the review queues - which are about decided frames - are left alone)."""
     if name in GRID_PENDING:
         return [f for f in frames if f.status is None]
     if name in EDITOR_PENDING:
@@ -137,16 +192,21 @@ def hide_reviewed_frames(frames: list[FrameInfo], name: str) -> list[FrameInfo]:
     return frames
 
 
+SMALL_H = 0.03  # a box height as a share of the image height: 0.03 is 32 px at 1080p, a far object
+
+
 def build_queue(index: list[FrameInfo], name: str, conf: float = 0.3, band: tuple[float, float] = (0.15, 0.6),
-                small_h: float = 0.03, ui_threshold: float = 0.3, hide_reviewed: bool = False) -> list[FrameInfo]:
+                small_h: float = SMALL_H, ui_threshold: float = 0.3, hide_reviewed: bool = False, checked=frozenset(),
+                flags: dict | None = None) -> list[FrameInfo]:
     """Frames of a queue in walking order; with hide_reviewed the ones that already have a decision are left out of
-    the queues for work still to do (see hide_reviewed_frames)."""
-    frames = _queue(index, name, conf, band, small_h, ui_threshold)
+    the queues for work still to do (see hide_reviewed_frames). `checked` (stems) are left out of the review queues;
+    `flags` is review_flags() when the caller already has it."""
+    frames = _queue(index, name, conf, band, small_h, ui_threshold, checked, flags)
     return hide_reviewed_frames(frames, name) if hide_reviewed else frames
 
 
 def _queue(index: list[FrameInfo], name: str, conf: float, band: tuple[float, float], small_h: float,
-           ui_threshold: float) -> list[FrameInfo]:
+           ui_threshold: float, checked=frozenset(), flags: dict | None = None) -> list[FrameInfo]:
     """`conf` is the proposal confidence shown as a box; `small_h` is a box height as a share of the image height
     (0.03 = 32 px at 1080p)."""
     if name == "all":
@@ -155,18 +215,29 @@ def _queue(index: list[FrameInfo], name: str, conf: float, band: tuple[float, fl
         return [f for f in index if f.max_conf < conf]
     if name == "edit":
         return [f for f in index if f.max_conf >= conf or f.status in ("todo", "pos", "skip")]
+    if name == "proposals":
+        return [f for f in index if f.status is None and f.max_conf >= conf]
     if name == "uncertain":
         scored = [(uncertainty(f.confs, *band), f) for f in index if f.status in (None, "todo")]
         return [f for s, f in sorted((x for x in scored if x[0] > 0), key=lambda x: -x[0])]
     if name == "small":
-        def smallest(f: FrameInfo) -> float:
-            hs = f.label_h if f.status in ("pos", "neg") else [h for h, c in zip(f.prop_h, f.confs) if c >= band[0]]
-            return min(hs, default=1.0)
-        scored = [(smallest(f), f) for f in index if f.status != "skip"]
+        scored = [(smallest_height(f, band), f) for f in index if f.status != "skip"]
         return [f for h, f in sorted((x for x in scored if x[0] < small_h), key=lambda x: x[0])]
     if name == "disagree":
         scored = [(disagreement(f, max(conf, 0.5)), f) for f in index]
         return [f for s, f in sorted((x for x in scored if x[0] > 0), key=lambda x: -x[0])]
+    if name in REVIEW_QUEUES:
+        flags = flags if flags is not None else review_flags(index, conf, checked)
+        by = {f.stem: f for f in index}
+        if name == "missed":
+            hits = [(-m, -e, 0, s) for s, (m, e, _h) in flags.items() if m > 0]
+        elif name == "extra":
+            hits = [(-e, -m, 0, s) for s, (m, e, _h) in flags.items() if e > 0]
+        elif name == "smalllab":
+            hits = [(h, 0, 0, s) for s, (m, e, h) in flags.items() if h < small_h]
+        else:  # review: disagreements first (the biggest first), then the frames that only have a small object
+            hits = [(-(m + 0.5 * e), h, 0, s) for s, (m, e, h) in flags.items() if m or e or h < small_h]
+        return [by[s] for *_k, s in sorted(hits)]
     if name == "unreviewed":
         return [f for f in index if f.status is None]
     if name in ("todo", "pos", "neg", "skip"):

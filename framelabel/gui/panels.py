@@ -1,19 +1,23 @@
-"""Small reusable widgets of the main window: the view list with counts, the grid / editor switch, the context bar
-that always says where you are, and the toast that confirms what an action did."""
+"""Reusable widgets of the main window: the workflow / library list with counts and progress, the grid / editor
+switch, the context bar that always says where you are, the hint card, and the toast that confirms what an action did."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QSize, QTimer, Qt, pyqtSignal
 import html
 
+from PyQt6.QtCore import QRectF, QSize, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QFont
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
-                             QSizePolicy, QStackedWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+                             QSizePolicy, QStackedWidget, QStyledItemDelegate, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+                             QWidget)
 
+from framelabel.core.queues import SORTS
 from framelabel.core.views import GROUPS, ViewDef
+from .icons import dot_icon, mode_icon
 from .theme import T, qc
 
 GRID_SIZES = ((1, 1), (2, 1), (1, 2), (2, 2), (3, 3), (4, 3), (4, 4), (5, 4))
-DIM = qc("text3")
+PROGRESS_ROLE = Qt.ItemDataRole.UserRole + 1   # 0..1 for a stage that has a progress bar
+LIBRARY_DOTS = {"all": "text3", "unreviewed": "text", "pos": "ok", "neg": "neutral", "skip": "skip"}  # theme tokens
 
 
 def grid_size_text(cols: int, rows: int, short: bool = False) -> str:
@@ -23,8 +27,36 @@ def grid_size_text(cols: int, rows: int, short: bool = False) -> str:
     return f"{cols} × {rows}{note}"
 
 
+class StageDelegate(QStyledItemDelegate):
+    """Draws a thin progress line under the name of a stage (how much of it is done)."""
+
+    def paint(self, painter, option, index) -> None:
+        super().paint(painter, option, index)
+        frac = index.data(PROGRESS_ROLE)
+        if frac is None or index.column() != 0:
+            return
+        r = option.rect
+        track = QRectF(r.left() + 6, r.bottom() - 3.5, r.width() - 8, 2.5)
+        painter.save()
+        painter.setRenderHint(painter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(qc("bg3"))
+        painter.drawRoundedRect(track, 1.2, 1.2)
+        if frac > 0:
+            painter.setBrush(qc("ok") if frac >= 1 else qc("accent"))
+            painter.drawRoundedRect(QRectF(track.left(), track.top(), max(track.width() * frac, 2.5), track.height()), 1.2, 1.2)
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        s = super().sizeHint(option, index)
+        if index.data(PROGRESS_ROLE) is not None:
+            s.setHeight(s.height() + 6)
+        return s
+
+
 class ViewTree(QTreeWidget):
-    """The views of the session in groups, each with its frame count. The highlighted row is where you are."""
+    """The workflow (three stages, each with its lenses) and the library, every row with its frame count. The
+    highlighted row is where you are; only the current stage shows its lenses."""
 
     view_chosen = pyqtSignal(str)  # a click on a view (not set by code)
 
@@ -32,12 +64,13 @@ class ViewTree(QTreeWidget):
         super().__init__(parent)
         self.setColumnCount(2)
         self.setHeaderHidden(True)
-        self.setIndentation(10)
+        self.setIndentation(12)
         self.setRootIsDecorated(True)
-        self.setUniformRowHeights(True)
+        self.setUniformRowHeights(False)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setAllColumnsShowFocus(True)
+        self.setItemDelegate(StageDelegate(self))
         self.header().setStretchLastSection(False)
         self.header().setSectionResizeMode(0, self.header().ResizeMode.Stretch)
         self.header().setSectionResizeMode(1, self.header().ResizeMode.ResizeToContents)
@@ -48,8 +81,9 @@ class ViewTree(QTreeWidget):
         self.currentItemChanged.connect(self.on_current)
         self.quiet = False
         self.counts: dict[str, int] = {}
+        self.next_key: str | None = None   # the stage to go to next: its count is highlighted
 
-    def set_views(self, defs: list[ViewDef], collapsed: set[str] = frozenset()) -> None:
+    def set_views(self, defs: list[ViewDef], class_colors: list[str] | None = None) -> None:
         self.quiet = True
         self.clear()
         self.items.clear()
@@ -59,55 +93,114 @@ class ViewTree(QTreeWidget):
         head.setBold(True)
         head.setPointSizeF(max(head.pointSizeF() * 0.85, 7))
         head.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
+        stage_font = QFont(self.font())
+        stage_font.setBold(True)
+        lens_font = QFont(self.font())
+        lens_font.setPointSizeF(max(lens_font.pointSizeF() * 0.95, 7))
         for gkey, gname in GROUPS:
-            members = [d for d in defs if d.group == gkey]
-            if not members:
-                continue
             g = QTreeWidgetItem([gname.upper(), ""])
             g.setFlags(Qt.ItemFlag.ItemIsEnabled)  # a heading: neither selectable nor a view
             g.setFont(0, head)
-            g.setForeground(0, QBrush(DIM))
+            g.setForeground(0, QBrush(qc("text3")))
             self.addTopLevelItem(g)
             self.groups[gkey] = g
-            for d in members:
-                it = QTreeWidgetItem(g, [d.label, ""])
-                it.setData(0, Qt.ItemDataRole.UserRole, d.key)
-                it.setToolTip(0, d.hint)
-                it.setToolTip(1, d.hint)
-                it.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-                self.items[d.key] = it
-            g.setExpanded(gkey not in collapsed)
+        for d in defs:
+            if d.parent is not None:
+                continue
+            it = self.make_item(self.groups[d.group], d)
+            if d.is_stage:
+                it.setText(0, f"{d.step}  {d.label}")
+                it.setFont(0, stage_font)
+                it.setData(0, PROGRESS_ROLE, 0.0 if d.key != "review" else None)
+                it.setIcon(0, mode_icon(d.mode))
+            elif d.key.startswith("class:"):
+                i = int(d.key.split(":", 1)[1])
+                it.setIcon(0, dot_icon(class_colors[i] if class_colors and i < len(class_colors) else "text2"))
+            else:
+                it.setIcon(0, dot_icon(LIBRARY_DOTS.get(d.key, "text2")))
+        for d in defs:
+            if d.parent is not None:
+                it = self.make_item(self.items[d.parent], d)
+                it.setFont(0, lens_font)
+        for g in self.groups.values():
+            g.setExpanded(True)
+        for key, it in self.items.items():
+            if self.defs[key].is_stage:
+                it.setExpanded(False)
         self.quiet = False
 
+    def make_item(self, parent: QTreeWidgetItem, d: ViewDef) -> QTreeWidgetItem:
+        it = QTreeWidgetItem(parent, [d.label, ""])
+        it.setData(0, Qt.ItemDataRole.UserRole, d.key)
+        it.setToolTip(0, d.hint)
+        it.setToolTip(1, d.hint)
+        it.setTextAlignment(1, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.items[d.key] = it
+        return it
+
+    def set_tooltips(self, tips: dict[str, str]) -> None:
+        for key, text in tips.items():
+            if key in self.items:
+                self.items[key].setToolTip(0, text)
+                self.items[key].setToolTip(1, text)
+
+    def set_mode_icons(self, modes: dict[str, str]) -> None:
+        """The icon of a stage shows the way it opens: a grid of tiles, or a box with handles (the editor)."""
+        for key, mode in modes.items():
+            it = self.items.get(key)
+            if it is not None and self.defs[key].is_stage:
+                it.setIcon(0, mode_icon(mode))
+
     def sizeHint(self):
-        """Tall enough for every row, so the list needs no scrolling while the groups are open (the frame list below
-        takes the rest of the panel)."""
-        rows = sum(1 + (g.childCount() if g.isExpanded() else 0) for g in self.groups.values())
-        h = self.sizeHintForRow(0) if self.groups else 24
-        return QSize(220, max(h, 20) * rows + 8)
+        """Tall enough for every visible row, so the list needs no scrolling (the frame list below takes the rest)."""
+        total = 8
 
-    def collapsed_groups(self) -> set[str]:
-        return {k for k, g in self.groups.items() if not g.isExpanded()}
+        def visit(item: QTreeWidgetItem) -> None:
+            nonlocal total
+            total += max(self.sizeHintForIndex(self.indexFromItem(item)).height(), 20)
+            if item.isExpanded():
+                for i in range(item.childCount()):
+                    visit(item.child(i))
 
-    def set_counts(self, counts: dict[str, int]) -> None:
+        for g in self.groups.values():
+            visit(g)
+        return QSize(220, total)
+
+    def set_counts(self, counts: dict[str, int], progress: dict[str, tuple[int, int]] | None = None,
+                   next_key: str | None = None) -> None:
         self.counts = dict(counts)
+        self.next_key = next_key
         for key, it in self.items.items():
             n = counts.get(key)
-            it.setText(1, "" if n is None else f"{n:,}".replace(",", " "))
+            stage = self.defs[key].is_stage
+            it.setText(1, "" if n is None else ("✓" if n == 0 and stage else f"{n:,}".replace(",", " ")))
+            if stage and key in (progress or {}):
+                left, total = progress[key]
+                it.setData(0, PROGRESS_ROLE, (1 - left / total) if total else 1.0)
         self.paint_text()
+        self.viewport().update()
 
     def paint_text(self) -> None:
-        """Counts muted, empty views dimmed, the selected row white (an explicit colour beats the style sheet)."""
+        """Muted counts, empty views dimmed, a finished stage green, the next stage to work on highlighted, the selected
+        row white (an explicit colour beats the style sheet)."""
         cur = self.currentItem()
         for key, it in self.items.items():
             n = self.counts.get(key)
+            d = self.defs[key]
             for col in (0, 1):
                 if it is cur:
-                    it.setForeground(col, QBrush(QColor("#ffffff")))
+                    color = QColor("#ffffff")
+                elif col == 1 and d.is_stage and n == 0:
+                    color = qc("ok")
+                elif col == 1 and key == self.next_key:
+                    color = qc("accent_hi")
                 elif n == 0:
-                    it.setForeground(col, QBrush(qc("text3")))
+                    color = qc("text3")
+                elif col == 0:
+                    color = qc("text") if (d.is_stage or d.parent is None) else qc("text2")
                 else:
-                    it.setForeground(col, QBrush(qc("text") if col == 0 else qc("text2")))
+                    color = qc("text2")
+                it.setForeground(col, QBrush(color))
 
     def select(self, key: str) -> None:
         it = self.items.get(key)
@@ -115,7 +208,12 @@ class ViewTree(QTreeWidget):
             return
         self.quiet = True
         self.setCurrentItem(it)
-        it.parent().setExpanded(True)  # the current view is never hidden inside a collapsed group
+        stage = self.defs[key].stage
+        for k, other in self.items.items():  # only the current stage shows its lenses
+            if self.defs[k].is_stage:
+                other.setExpanded(k == stage)
+        if it.parent() is not None:
+            it.parent().setExpanded(True)
         self.scrollToItem(it)
         self.quiet = False
         self.paint_text()
@@ -171,7 +269,8 @@ class SwitchBox(QWidget):
 
 
 class ModeSwitch(QWidget):
-    """Grid | Editor as a two-segment switch: both options are visible and the active one is highlighted."""
+    """Grid | Editor as a two-segment switch: both options are visible and the active one is highlighted. The icons are
+    the ones the workflow list shows next to each stage, so a stage's icon tells which segment it opens in."""
 
     mode_chosen = pyqtSignal(str)
 
@@ -184,11 +283,13 @@ class ModeSwitch(QWidget):
         lay.setSpacing(2)
         self.group = QButtonGroup(self)
         self.buttons: dict[str, QPushButton] = {}
-        for mode, text, tip in (("grid", "Grid", "Many frames at once: triage by clicking tiles"),
-                                ("edit", "Editor", "One frame at a time: draw and fix boxes")):
+        self.tips = {"grid": "Grid: many frames at once, click tiles", "edit": "Editor: one frame, draw and fix boxes"}
+        for mode, text in (("grid", "Grid"), ("edit", "Editor")):
             b = QPushButton(text)
             b.setCheckable(True)
-            b.setToolTip(tip)
+            b.setIcon(mode_icon(mode))
+            b.setIconSize(QSize(14, 14))
+            b.setToolTip(self.tips[mode])
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keys stay with the canvas / grid
             b.clicked.connect(lambda _=False, m=mode: self.mode_chosen.emit(m))
@@ -201,15 +302,17 @@ class ModeSwitch(QWidget):
         self.buttons[mode].setChecked(True)
 
     def set_hint(self, key: str) -> None:
-        for b in self.buttons.values():
-            b.setToolTip(b.toolTip().split("  [")[0] + (f"  [{key}]" if key else ""))
+        for mode, b in self.buttons.items():
+            b.setToolTip(self.tips[mode] + (f"   [{key} switches]" if key else ""))
 
 
 class ContextBar(QFrame):
-    """One thin row above the work area: which view, where in it, and (in the grid) what the page will do. The
-    description of the view is its tooltip; the keys of the mode are in the status bar."""
+    """One thin row above the work area: where you are (stage and lens, position), what the grid page will do, the
+    order (Label stage), the tiles per page and the Grid | Editor switch. The description of the view is the tooltip of
+    its title; the keys of the mode are in the status bar."""
 
     grid_size_chosen = pyqtSignal(int, int)
+    sort_chosen = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -221,57 +324,116 @@ class ContextBar(QFrame):
         lay.setSpacing(10)
         self.title = QLabel()
         self.title.setProperty("role", "title")
+        self.lens = QLabel()
+        self.lens.setProperty("role", "lens")
         self.where = QLabel()
         self.where.setTextFormat(Qt.TextFormat.RichText)
+        self.where.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # clips instead of widening
         self.stats = QLabel()
         self.stats.setTextFormat(Qt.TextFormat.RichText)
+        self.sort = QComboBox()
+        for key, text in SORTS:
+            self.sort.addItem(text, key)
+        self.sort.setToolTip("The order of the frames of this stage")
+        self.sort.activated.connect(lambda i: self.sort_chosen.emit(self.sort.itemData(i)))
         self.tiles = QComboBox()
         for c, r in GRID_SIZES:
             self.tiles.addItem(grid_size_text(c, r, short=True), f"{c}x{r}")
         self.tiles.setToolTip("Tiles per page")
         self.tiles.activated.connect(lambda i: self.grid_size_chosen.emit(*map(int, self.tiles.itemData(i).split("x"))))
-        lay.addWidget(self.title)
-        lay.addWidget(self.where, 1)
-        lay.addWidget(self.stats)
-        lay.addWidget(self.tiles)
+        self.mode_switch = ModeSwitch()
+        for w, stretch in ((self.title, 0), (self.lens, 0), (self.where, 1), (self.stats, 0), (self.sort, 0),
+                           (self.tiles, 0), (self.mode_switch, 0)):
+            lay.addWidget(w, stretch)
 
     def set_grid_size(self, cols: int, rows: int) -> None:
         i = self.tiles.findData(f"{cols}x{rows}")
         if i >= 0:
             self.tiles.setCurrentIndex(i)
 
+    def set_sort(self, key: str) -> None:
+        i = self.sort.findData(key)
+        if i >= 0:
+            self.sort.setCurrentIndex(i)
+
     def show_tiles(self, on: bool) -> None:
         self.tiles.setVisible(on)
         self.stats.setVisible(on)
 
-    def set_text(self, title: str, where: str, hint: str, stats: str = "") -> None:
+    def show_sort(self, on: bool) -> None:
+        self.sort.setVisible(on)
+
+    def set_text(self, title: str, where: str, hint: str, stats: str = "", lens: str = "") -> None:
         self.title.setText(title)
         self.title.setToolTip(hint)
+        self.lens.setText(f"›  {lens}" if lens else "")
+        self.lens.setVisible(bool(lens))
         parts = [html.escape(p) for p in where.split("  |  ")]
         sep = f"<span style='color:{T['text3']}'>&nbsp;&middot;&nbsp;</span>"
         self.where.setText(f"<span style='color:{T['text2']}'>" + sep.join(parts) + "</span>")
         self.stats.setText(stats)
 
 
-class Toast(QLabel):
-    """A short confirmation over the work area ('Saved as empty'); it fades after a moment and ignores the mouse."""
+class CoachCard(QLabel):
+    """Under the list of views: what the current view is for and what to do in it, in a sentence or two."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("coach")
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.TextFormat.RichText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+
+    def show_hint(self, title: str, mode: str, hint: str) -> None:
+        self.setText(f"<b style='color:{T['text']}'>{html.escape(title)}</b>"
+                     f"<span style='color:{T['text3']}'> &nbsp;&middot;&nbsp; {html.escape(mode)}</span><br>{html.escape(hint)}")
+
+
+class Toast(QFrame):
+    """A short message over the work area ('Saved as empty'). It fades after a moment and ignores the mouse, unless it
+    carries an action ('Undo'), which stays longer."""
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.setObjectName("toast")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 8, 14, 8)
+        lay.setSpacing(12)
+        self.label = QLabel()
+        self.button = QPushButton()
+        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.button.clicked.connect(self.run_action)
+        lay.addWidget(self.label)
+        lay.addWidget(self.button)
+        self.action = None
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.hide)
         self.hide()
 
-    def show_message(self, text: str, ms: int = 1800) -> None:
-        self.setText(text)
+    def text(self) -> str:
+        return self.label.text()
+
+    def show_message(self, text: str, ms: int = 1800, action: tuple | None = None) -> None:
+        """`action` = (button text, callable)."""
+        self.label.setText(text)
+        self.action = action[1] if action else None
+        self.button.setVisible(action is not None)
+        if action:
+            self.button.setText(action[0])
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, action is None)
         self.adjustSize()
         self.place()
         self.show()
         self.raise_()
-        self.timer.start(ms)
+        self.timer.start(max(ms, 6000) if action else ms)
+
+    def run_action(self) -> None:
+        action, self.action = self.action, None
+        self.hide()
+        if action:
+            action()
 
     def place(self) -> None:
         p = self.parentWidget()

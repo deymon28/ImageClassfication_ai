@@ -77,12 +77,12 @@ def test_grid_then_editor_flow(app, project):
     assert w.mode == "grid" and len(w.queue) == 6  # six frames without proposals go to the grid
     w.grid.cols, w.grid.rows = 3, 2
     w.grid.set_page(0)
-    first = w.queue[0].stem
+    first, skipped = w.queue[0].stem, w.queue[1].stem
     w.grid.toggle(first, "people")
-    w.grid.toggle(w.queue[1].stem, "skip")
+    w.grid.toggle(skipped, "skip")
     assert w.handle_key("Space")  # commit the only page -> the editor opens
     review = w.ws.review
-    assert review.get(first) == "todo" and review.get(w.queue[1].stem) == "skip" if w.mode == "grid" else True
+    assert review.get(first) == "todo" and review.get(skipped) == "skip"
     assert w.mode == "edit"
     st = {k: v for k, v in w.ws.review.status.items()}
     assert sorted(st.values()).count("neg") == 4 and list(st.values()).count("todo") == 1
@@ -628,7 +628,7 @@ def test_session_report_window_opens_the_view_of_a_row(app, project, monkeypatch
     w = MainWindow()
     w.settings.clear()
     open_and_wait(app, w, path)
-    assert "50 ui" in w.status_label.text() and " 8 new" in w.counts_label.text()
+    assert "50 ui" in w.status_label.text() and "of 8 decided" in w.counts_label.text()
     seen = {}
 
     def fake_exec(self):  # the user double-clicks the "weak proposals" row, the report closes, the view opens
@@ -640,7 +640,7 @@ def test_session_report_window_opens_the_view_of_a_row(app, project, monkeypatch
     monkeypatch.setattr(ReportDialog, "exec", fake_exec)
     w.session_report()
     text = seen["dlg"].as_text()
-    assert "Recorder skipped: ui: 50" in text and "Proposals hidden by an ignore zone" in text
+    assert "Recorder skipped: ui: 50" in text and "only inside an ignore zone" in text
     assert w.mode == "grid" and w.view_key == "zone" and w.grid.show_ignored
     w.set_mode("grid", queue="triage")
     assert not w.grid.show_ignored
@@ -735,7 +735,7 @@ def test_grid_sizes_1x1_2x1_1x2(app, project):
     w.close()
 
 
-def test_todo_views_only_list_frames_without_a_decision(app, project):
+def test_the_stages_only_list_frames_without_a_decision(app, project):
     from framelabel.gui.app import MainWindow
 
     path, s = project
@@ -750,7 +750,7 @@ def test_todo_views_only_list_frames_without_a_decision(app, project):
     assert [f.stem for f in w.queue] == [first, "100006_000", "100007_000"]  # marked + new proposals; no empty / skipped
     # coming back later (reopening, switching views): the decided frames are gone from the to-do views, nothing is lost
     w.set_mode("grid", queue="triage")
-    assert w.queue == [] and "Nothing in" in w.grid.message and "decision" in w.grid.message
+    assert w.queue == [] and w.grid.message.startswith("Nothing left in Triage.") and "Next: Label, 3 frames" in w.grid.message
     w.set_mode("grid", queue="skip")
     assert [f.stem for f in w.queue] == [second]  # the Done views show the decisions
     w.set_mode("grid", queue="all")
@@ -777,8 +777,9 @@ def test_views_have_counts_and_the_current_one_is_highlighted(app, project):
     assert "class:0" in tree.items and "class:1" in tree.items
     # the context bar says where you are and what to do
     bar = w.context_bar
-    assert bar.title.text() == "Triage: nothing found" and "page 1 of 1" in bar.where.text()
+    assert bar.title.text() == "Triage" and not bar.lens.isVisible() and "page 1 of 1" in bar.where.text()
     assert "saved as empty" in bar.title.toolTip() and "has objects" in bar.stats.text()
+    assert "Triage" in w.coach.text() and "Grid" in w.coach.text()  # the card under the list says what to do here
     # a decision updates the counts (debounced) and the progress
     w.grid.toggle(w.queue[0].stem, "skip")
     w.handle_key("Space")
@@ -941,4 +942,623 @@ def test_side_panels_can_be_hidden_and_the_editor_panel_is_editor_only(app, proj
     assert not (w.left_dock.isVisible() or w.tools_dock.isVisible() or w.frame_dock.isVisible())
     assert w.handle_key("Ctrl+B") and w.left_dock.isVisible() and w.frame_dock.isVisible()
     assert "Space" in w.keys_label.text() or "Return" in w.keys_label.text()
+    w.close()
+
+
+def reviewed_project(app, project):
+    """A window on the test project where frame 100006 was saved as empty although the model is confident (Review)."""
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    fi = next(f for f in w.ws.index if f.stem == "100006_000")
+    w.ws.save(fi.path, [], 320, 180)
+    w.refresh_counts()
+    wait_until(app, lambda: w.counts_by_view.get("missed") == 1)
+    return w
+
+
+def test_workflow_tree_has_three_stages_with_lenses_only_for_the_current_one(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    tree = w.view_tree
+    stages = [k for k, d in tree.defs.items() if d.is_stage]
+    assert stages == ["triage", "edit", "review"]
+    assert [tree.items[k].text(0) for k in stages] == ["1  Triage", "2  Label", "3  Review"]
+    assert tree.items["triage"].isExpanded() and not tree.items["edit"].isExpanded()  # lenses of the current stage only
+    assert [tree.items["triage"].child(i).text(0) for i in range(3)] == ["Weak proposals", "Only in ignore zone", "Interface screens"]
+    w.on_view_chosen("proposals")  # a lens of Label: its stage opens, Triage closes
+    assert tree.current_key() == "proposals" and tree.items["edit"].isExpanded() and not tree.items["triage"].isExpanded()
+    assert w.view_def().stage == "edit" and w.mode == "edit"  # a lens opens the way its stage does
+    for key, mode in (("go_triage", "grid"), ("go_label", "edit"), ("go_review", "grid")):  # Ctrl+1 / 2 / 3
+        w.do(key)
+        assert w.mode == mode and w.mode_switch.buttons[mode].isChecked()
+    assert w.view_key == "review" and tree.current_key() == "review"
+    w.close()
+
+
+def test_stage_rows_count_what_is_left_and_show_the_way_they_open(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    wait_until(app, lambda: bool(w.counts_by_view))
+    tree = w.view_tree
+    assert tree.items["triage"].text(1) == "6" and tree.items["edit"].text(1) == "2"
+    assert tree.items["review"].text(1) == "\u2713"  # nothing to review: a finished stage is a check mark
+    assert tree.next_key == "triage"  # where the work is
+    w.grid.toggle(w.queue[0].stem, "skip")
+    w.handle_key("Space")  # Triage ends (one page): Label opens and Triage is empty
+    wait_until(app, lambda: w.counts_by_view.get("triage") == 0)
+    assert tree.items["triage"].text(1) == "\u2713" and tree.next_key == "edit"
+    assert w.mode == "edit" and "Triage is done" in w.central.toast.text()
+    assert w.mode_switch.buttons["edit"].isChecked()  # the icon of Label is the editor's
+    w.close()
+
+
+def test_the_order_of_label_is_a_sort_that_is_remembered(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    bar = w.context_bar
+    assert not bar.sort.isVisible()  # only the Label stage can be sorted
+    w.do("go_label")
+    assert bar.sort.isVisible() and bar.sort.currentData() == "time"
+    w.on_sort_chosen("small")
+    assert w.sort_key == "small" and w.settings.value("sort") == "small"
+    w.do("go_review")
+    assert not bar.sort.isVisible()
+    w.close()
+
+
+def test_double_click_opens_a_tile_in_the_editor_and_tab_comes_back_to_its_page(app, project):
+    from PyQt6.QtCore import QPoint
+
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    g = w.grid
+    g.cols, g.rows = 3, 1  # three tiles per page: frames 3, 4, 5 are on the second page
+    g.set_page(1)
+    target = g.page_items()[1].stem
+    pos = tile_center(g, 1)
+    QTest.mouseClick(g, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, pos)  # the first click of the pair ticks it
+    assert g.marks.get(target) == "people"
+    QTest.mouseDClick(g, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, pos)  # the double-click event unticks it
+    assert w.mode == "edit" and w.cur_path.stem == target
+    assert target not in g.marks  # the two clicks of the double-click ticked the tile twice: no mark is left behind
+    assert w.handle_key("Tab") and w.mode == "grid" and target in {fi.stem for fi in g.page_items()}  # the same page again
+    g.hover = 2
+    assert w.handle_key("O") and w.cur_path.stem == g.items[g.page * g.per_page + 2].stem  # O opens the tile under the mouse
+    w.close()
+
+
+def test_labeled_tiles_are_locked_and_only_pending_marks_are_drawn(app, project):
+    from framelabel.core.boxes import Box
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    fi = w.ws.index[0]
+    w.ws.save(fi.path, [Box(10, 10, 100, 120, 0)], 320, 180)  # labeled
+    w.on_view_chosen("pos")
+    g = w.grid
+    assert w.mode == "grid" and [f.stem for f in g.items] == [fi.stem]
+    assert g.marks.get(fi.stem) == "people" and g.pending(g.items[0]) is None  # a decision is not a pending change
+    QTest.mouseClick(g, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, tile_center(g, 0))
+    assert g.marks.get(fi.stem) == "people" and "Labeled frame" in w.central.toast.text()  # locked: nothing changed
+    assert g.toggle(fi.stem, "skip") is False
+    w.handle_key("Space")  # saving the page leaves the boxes alone
+    assert w.ws.review.get(fi.stem) == "pos" and (s / "labels" / f"{fi.stem}.txt").read_text().strip() != ""
+    other = w.ws.index[1]
+    w.ws.save(other.path, [], 320, 180)  # saved as empty
+    w.on_view_chosen("neg")
+    assert [f.stem for f in g.items] == [other.stem] and g.pending(g.items[0]) is None  # its decision, not a change
+    g.toggle(other.stem, "people")
+    assert g.pending(g.items[0]) == "people"  # ticking it is a change (it would go back to Label)
+    g.toggle(other.stem, "people")
+    assert g.pending(g.items[0]) is None
+    w.on_view_chosen("triage")  # new frames: ticked = pending, unticked = nothing to show
+    a, b = g.items[0], g.items[1]
+    g.toggle(a.stem, "people")
+    assert g.pending(a) == "people" and g.pending(b) is None
+    w.close()
+
+
+def test_review_checks_the_page_and_undo_takes_it_back(app, project):
+    w = reviewed_project(app, project)
+    assert w.view_tree.items["review"].text(1) == "1" and w.view_tree.items["missed"].text(1) == "1"
+    w.do("go_review")
+    assert w.mode == "grid" and [f.stem for f in w.queue] == ["100006_000"]  # saved empty, the model is confident
+    assert "has objects" not in w.context_bar.stats.text()  # nothing is pending: Review only shows what changed
+    w.handle_key("Space")  # a page that is fine: checked
+    assert "100006_000" in w.ws.checked and "checked" in w.central.toast.text().lower()
+    wait_until(app, lambda: w.counts_by_view.get("review") == 0)
+    assert w.view_tree.items["review"].text(1) == "\u2713"
+    assert w.central.toast.button.text() == "Undo"
+    assert w.handle_key("Ctrl+Z")  # in the grid Ctrl+Z takes back the last saved page
+    assert "100006_000" not in w.ws.checked and "restored" in w.central.toast.text().lower()
+    wait_until(app, lambda: w.counts_by_view.get("review") == 1)
+    w.close()
+
+
+def test_undo_page_puts_triage_back(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    first, second = w.queue[0].stem, w.queue[1].stem
+    w.grid.toggle(first, "people")
+    w.grid.toggle(second, "skip")
+    w.handle_key("Space")
+    assert w.ws.review.get(first) == "todo" and w.ws.review.get(second) == "skip"
+    empties = [f.stem for f in w.ws.index if w.ws.review.get(f.stem) == "neg"]
+    assert len(empties) == 4 and all((s / "labels" / f"{x}.txt").read_text() == "" for x in empties)
+    w.undo_page()
+    assert w.mode == "grid" and w.view_key == "triage"
+    assert [w.ws.review.get(f.stem) for f in w.ws.index] == [None] * 8  # every status is back
+    assert not (s / "labels").exists() or not any((s / "labels").iterdir())  # the empty label files are gone again
+    assert w.grid.marks.get(first) == "people" and w.grid.marks.get(second) == "skip"  # and the page shows its marks
+    w.undo_page()
+    assert "Nothing to undo" in w.central.toast.text()
+    w.close()
+
+
+def test_the_editor_shows_what_the_model_sees_and_the_labels_do_not(app, project):
+    w = reviewed_project(app, project)
+    w.set_mode("edit", queue="missed")
+    c = w.canvas
+    assert w.cur_path.stem == "100006_000" and c.boxes == [] and len(c.ghosts) == 1
+    assert "model sees 1 more" in w.status_label.text()
+    c.resize(640, 360)
+    app.processEvents()
+    centre = c.wrect(c.ghosts[0]).center().toPoint()
+    QTest.mousePress(c, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre)
+    QTest.mouseRelease(c, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, centre)
+    assert len(c.boxes) == 1 and c.boxes[0].conf is None and c.ghosts == []  # a click adds the box the model suggested
+    w.handle_key("Space")  # saved (and, in Review, checked)
+    assert w.ws.review.get("100006_000") == "pos" and "100006_000" in w.ws.checked
+    w.close()
+
+
+def test_mark_checked_in_the_editor_only_for_saved_frames(app, project):
+    w = reviewed_project(app, project)
+    w.set_mode("edit", queue="review")
+    assert w.action_buttons["mark_checked"].isVisibleTo(w)
+    w.handle_key("K")
+    assert "100006_000" in w.ws.checked and "Checked" in w.central.toast.text()  # and the end-of-view hint follows it
+    assert "End of Review" in w.central.toast.text()
+    w.do("go_triage")
+    assert not w.action_buttons["mark_checked"].isVisibleTo(w)  # the button belongs to Review
+    w.set_mode("edit", queue="all")
+    w.go(6)
+    w.ws.review.set("100007_000", None)
+    w.go(7)  # a new frame: nothing to check
+    w.handle_key("K")
+    assert "Only saved frames" in w.central.toast.text()
+    w.close()
+
+
+def test_command_palette_lists_views_actions_and_frames(app, project):
+    from framelabel.gui.palette import fuzzy_score, rank
+
+    w = reviewed_project(app, project)
+    titles = [e.title for e in w.palette_entries()]
+    assert "Go to Triage > Weak proposals" in titles and "Go to Review" in titles and "Go to Labeled" in titles
+    assert any(t.startswith("Save the frame") for t in titles) is False  # grid mode: the editor's actions are not offered
+    assert "Next page" in " ".join(titles) or any("page" in t.lower() for t in titles)
+    assert any(t.startswith("Export YOLO dataset") for t in titles)  # menu items that have no key are listed too
+    best = rank(w.palette_entries(), "weak")[0]
+    assert best.title == "Go to Triage > Weak proposals" and best.run is not None
+    w.set_mode("edit", queue="all")
+    assert any(t.startswith("Save the frame") for t in [e.title for e in w.palette_entries()])
+    assert [e.title for e in w.palette_frames("100006")] == ["Go to frame 100006_000"]
+    assert w.palette_frames("3")[0].title.startswith("Go to frame 3:")
+    # fuzzy matching: letters in order, word starts and prefixes win
+    assert fuzzy_score("wk", "Weak proposals") is not None and fuzzy_score("zz", "Weak proposals") is None
+    assert fuzzy_score("weak", "Weak proposals") > fuzzy_score("weak", "Go to Triage > Weak proposals") > 0
+    w.close()
+
+
+def test_pace_appears_once_there_are_enough_decisions(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    wait_until(app, lambda: bool(w.counts_by_view))
+    assert w.pace_label.isHidden()
+    w.pace.events.clear()
+    import time as _time
+
+    w.pace.events.append((_time.monotonic() - 120, 30))  # 30 decisions two minutes ago
+    w.update_status()
+    assert "per min" in w.pace_label.text() and not w.pace_label.isHidden()
+    w.close()
+
+
+def test_a_tile_tooltip_says_what_the_frame_is(app, tmp_path):
+    from framelabel.core.queues import FrameInfo
+    import numpy as np
+
+    g = make_grid(app, tmp_path, 2, 2, n=2)
+    g.class_names = ["enemy", "corpse"]
+    fi = FrameInfo(tmp_path / "000000.jpg", "pos", confs=[0.9, 0.4], prop_h=[0.3, 0.3], prop_xyxy=np.zeros((2, 4)),
+                   label_cls=[0, 0, 1], label_h=[0.3] * 3, label_xyxy=np.zeros((3, 4)), ui=0.1)
+    text = g.tooltip_for(fi)
+    assert "labeled" in text and "enemy x2, corpse" in text and "2 proposals, best 0.90" in text and "interface screen" in text
+    plain = g.tooltip_for(FrameInfo(tmp_path / "000001.jpg", None, ignored_conf=0.6))
+    assert "new" in plain and "no proposals (hidden by an ignore zone: 0.60)" in plain and "interface" not in plain
+    g.shutdown()
+
+
+def test_review_notes_say_what_is_wrong_with_each_frame(app, project):
+    w = reviewed_project(app, project)
+    w.on_view_chosen("review")
+    assert w.frame_model.notes == {"100006_000": "missed 1"}
+    row = w.frame_model.data(w.frame_model.index(0))
+    assert "[empty]" in row and row.endswith("missed 1")
+    w.on_view_chosen("triage")
+    assert w.frame_model.notes == {}  # only Review has notes
+    w.close()
+
+
+def test_end_of_a_view_offers_a_button_to_the_next_stage(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    w.do("go_label")
+    assert [f.stem for f in w.queue] == ["100006_000", "100007_000"]
+    w.handle_key("Space")
+    w.handle_key("Space")  # the last frame of Label: saved, and the end of the view
+    toast = w.central.toast
+    assert "Saved: 1 box" in toast.text() and "End of Label." in toast.text()  # the confirmation leads the message
+    assert toast.button.isVisibleTo(w) and toast.button.text() == "Go to Triage"
+    toast.button.click()
+    assert w.view_key == "triage" and w.mode == "grid"
+    w.close()
+
+
+def test_the_palette_runs_what_was_chosen_after_it_closes(app, project, monkeypatch):
+    from PyQt6.QtWidgets import QDialog
+
+    from framelabel.gui.palette import CommandPalette
+
+    w = reviewed_project(app, project)
+
+    def choose(self):  # the user types 'review' and presses Enter
+        self.edit.setText("review")
+        self.accept_current()
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(CommandPalette, "exec", choose)
+    assert w.handle_key("Ctrl+K")
+    wait_until(app, lambda: w.view_key == "review")
+    assert w.mode == "grid" and w.view_tree.current_key() == "review"
+    w.close()
+
+
+def test_the_overlay_of_a_tile_follows_a_saved_frame(app, project):
+    from framelabel.core.boxes import Box
+
+    w = reviewed_project(app, project)
+    w.on_view_chosen("neg")
+    g = w.grid
+    fi = g.items[0]
+    assert g.overlays(fi)[0] == [] and len(g.overlays(fi)[1]) == 1  # empty frame: the model's proposal is the ghost
+    w.ws.save(fi.path, [Box(144, 63, 176, 117, 0)], 320, 180)  # now it is labeled, and the label covers the proposal
+    fresh = w.ws.index[w.ws.by_stem[fi.stem]]
+    g.by_stem[fi.stem] = fresh
+    labels, ghosts, _weak, _hidden = g.overlays(fresh)
+    assert len(labels) == 1 and ghosts == []
+    w.close()
+
+
+def test_undoing_a_page_leaves_later_work_alone(app, project):
+    """The reviewer's data-loss scenario: tick A in Triage, save, label A in Label, then undo the page in the grid."""
+    from framelabel.core.boxes import Box
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    first, second = w.queue[0].stem, w.queue[1].stem
+    w.grid.toggle(first, "people")
+    w.grid.toggle(second, "people")
+    w.handle_key("Space")
+    fi = next(f for f in w.ws.index if f.stem == first)
+    w.ws.save(fi.path, [Box(10, 10, 100, 120, 0)], 320, 180)  # later: the first one is labeled
+    w.undo_page()
+    assert w.ws.review.get(first) == "pos" and (s / "labels" / f"{first}.txt").read_text().strip() != ""  # still labeled
+    assert w.ws.review.get(second) is None  # the other one is undone
+    assert "left as they are" in w.central.toast.text()
+    assert first not in w.grid.marks or w.grid.marks[first] == "people"  # a labeled frame shows its decision, nothing stale
+    w.close()
+
+
+def test_the_undo_page_button_works_and_a_page_that_changes_nothing_offers_no_undo(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    first = w.queue[0].stem
+    w.grid.toggle(first, "people")
+    w.handle_key("Space")
+    w.set_mode("grid", queue="triage")
+    w.action_buttons["undo_page"].click()  # the button in the actions panel, not the key
+    assert w.ws.review.get(first) is None and "restored" in w.central.toast.text().lower()
+    # saving a page that has nothing to change must not offer an Undo that would take back an older page
+    w.grid.toggle(first, "people")
+    w.handle_key("Space")  # saved again: this is the older page now
+    w.on_view_chosen("neg")  # the Library's empty frames
+    assert w.queue and w.mode == "grid"
+    w.handle_key("Space")
+    assert "Nothing to change" in w.central.toast.text() and not w.central.toast.button.isVisibleTo(w)
+    assert len(w.undo_pages) == 1  # the older Triage page is still the only entry
+    w.close()
+
+
+def test_marks_are_dropped_when_the_frame_was_decided_in_the_editor_meanwhile(app, project):
+    """Tick a frame in the grid, open it in the editor, save it as empty, come back: the stale tick must not win."""
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    target = w.queue[1].stem
+    w.grid.toggle(target, "people")
+    w.open_in_editor(target)
+    assert w.mode == "edit" and w.cur_path.stem == target
+    w.handle_key("E")  # saved as empty in the editor
+    assert w.ws.review.get(target) == "neg"
+    w.set_mode("grid", keep_stem=target)
+    assert target not in w.grid.marks  # the tick was made for a frame that had no decision
+    w.handle_key("Space")
+    assert w.ws.review.get(target) == "neg"  # the explicit decision stands
+    w.close()
+
+
+def test_a_stale_skip_mark_cannot_cost_a_labeled_frame_its_boxes(app, project):
+    from framelabel.core.boxes import Box
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    w.on_view_chosen("all")
+    target = w.grid.page_items()[2].stem
+    QTest.mouseClick(w.grid, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ControlModifier, tile_center(w.grid, 2))
+    assert w.grid.marks.get(target) == "skip"  # ticked SKIP, not saved yet
+    w.open_in_editor(target)
+    c = w.canvas
+    c.resize(640, 360)
+    app.processEvents()
+    QTest.mousePress(c, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(100, 100))
+    QTest.mouseMove(c, QPoint(200, 220))
+    QTest.mouseRelease(c, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(200, 220))
+    w.handle_key("Space")  # labeled in the editor
+    assert w.ws.review.get(target) == "pos"
+    w.set_mode("grid", keep_stem=target)
+    w.handle_key("Space")
+    assert w.ws.review.get(target) == "pos" and (s / "labels" / f"{target}.txt").read_text().strip() != ""
+    w.close()
+
+
+def test_mark_checked_saves_the_edits_first_and_keeps_the_check(app, project):
+    from framelabel.core.boxes import Box
+
+    w = reviewed_project(app, project)
+    w.set_mode("edit", queue="review")
+    assert w.cur_path.stem == "100006_000"
+    w.canvas.add_box(Box(100, 40, 160, 120, 0))  # an edit that is not saved yet
+    assert w.canvas.dirty
+    w.handle_key("K")
+    assert w.ws.review.get("100006_000") == "pos" and "100006_000" in w.ws.checked  # saved, and checked after it
+    w.close()
+
+
+def test_a_class_with_a_named_colour_opens(app, tmp_path, monkeypatch):
+    from framelabel.core.project import Project
+    from framelabel.gui.app import MainWindow
+
+    monkeypatch.setenv("FRAMELABEL_SETTINGS_FILE", str(tmp_path / "settings.ini"))
+    s = tmp_path / "session_20261008_100000"
+    (s / "frames").mkdir(parents=True)
+    cv2.imwrite(str(s / "frames" / "100000_000.jpg"), np.zeros((90, 160, 3), np.uint8))
+    path = tmp_path / "p.yaml"
+    Project.from_dict({"name": "t", "classes": [{"name": "enemy", "color": "red"}, {"name": "corpse", "color": "#00beff"}],
+                       "sources": [str(tmp_path)]}, tmp_path, path).save()
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    assert w.project is not None and "class:0" in w.view_tree.items and not w.view_tree.items["class:0"].icon(0).isNull()
+    assert w.view_name("class:0") == "Class: enemy"  # class views have names, not keys
+    titles = [e.title for e in w.palette_entries()]
+    assert "Go to Class: enemy" in titles and "class:0" not in " ".join(titles)
+    w.on_view_chosen("class:1")
+    assert "Class: corpse" in w.windowTitle()
+    w.close()
+
+
+def test_the_end_of_a_view_tells_the_truth_about_what_is_left(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    # V in Triage with frames left and nothing elsewhere: it says so instead of "nothing left"
+    for f in list(w.ws.index):
+        if f.stem in ("100006_000", "100007_000"):
+            w.ws.save(f.path, [], 320, 180)  # Label has nothing: only Triage has frames
+    w.ws.check(["100006_000", "100007_000"])  # and Review has nothing either (the model's proposals were looked at)
+    w.refresh_counts()
+    wait_until(app, lambda: w.counts_by_view.get("edit") == 0)
+    w.do("grid_view")
+    assert "still has 6" in w.central.toast.text() and "Nothing left" not in w.central.toast.text()
+    # an empty lens does not claim that every frame has a decision while its stage has frames
+    w.on_view_chosen("ui")
+    assert w.queue == [] and "Triage still has 6 frames" in w.grid.message and "Every frame" not in w.grid.message
+    # the last page saved while an earlier page was passed over: the view shows what is left instead of leaving
+    w.on_view_chosen("triage")
+    g = w.grid
+    g.cols, g.rows = 2, 1  # three pages of two
+    w.set_grid_size(2, 1)
+    g.set_page(2)  # jump to the last page
+    w.handle_key("Space")
+    assert w.view_key == "triage" and "left in Triage" in w.central.toast.text()
+    assert len(w.queue) == 4  # pages 1 and 2 are still waiting
+    w.close()
+
+
+def test_the_end_of_a_lens_points_back_to_its_stage(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    w.on_view_chosen("proposals")  # a lens of Label: 100006 and 100007
+    w.go(0)
+    w.handle_key("Space")
+    w.handle_key("Space")
+    text = w.central.toast.text()
+    assert "End of Label > From the model." in text and "Saved: 1 box" in text
+    assert w.central.toast.button.isVisibleTo(w)  # a button, whichever stage is the right one to go on with
+    w.close()
+
+
+def test_a_late_count_of_the_previous_session_is_dropped(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.refresh_counts()
+    assert w.counts_job is not None
+    old = w.counts_job
+    w.start_loading(w.sessions[0])  # another load starts: the running count belongs to the old workspace
+    assert w.counts_job is None and old.cancel_requested
+    wait_until(app, lambda: w.ws is not None and w.loader is None)
+    w.close()
+
+
+def test_the_timers_stop_when_the_window_closes(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.counts_timer.start()
+    w.conf_timer.start()
+    w.close()
+    assert not w.counts_timer.isActive() and not w.conf_timer.isActive()
+
+
+def test_a_ctrl_double_click_ticks_back_the_same_kind_and_does_not_open(app, tmp_path):
+    from framelabel.gui.grid import Grid  # noqa: F401  (make_grid builds one)
+
+    NO, CTRL = Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.ControlModifier
+    g = make_grid(app, tmp_path, 2, 2)
+    opened = []
+    g.open_requested.connect(opened.append)
+    stem = g.page_items()[0].stem
+    pos = tile_center(g, 0)
+    QTest.mouseClick(g, Qt.MouseButton.LeftButton, CTRL, pos)  # the first click of a Ctrl+double-click ticks SKIP
+    assert g.marks.get(stem) == "skip"
+    QTest.mouseDClick(g, Qt.MouseButton.LeftButton, CTRL, pos)
+    assert stem not in g.marks and opened == []  # ticked back, and a Ctrl+double-click does not open the editor
+    QTest.mouseClick(g, Qt.MouseButton.MiddleButton, NO, pos)  # the middle button ticks SKIP as well
+    assert g.marks.get(stem) == "skip"
+    QTest.mouseDClick(g, Qt.MouseButton.MiddleButton, NO, pos)
+    assert stem not in g.marks and opened == []
+    QTest.mouseClick(g, Qt.MouseButton.LeftButton, NO, pos)
+    QTest.mouseDClick(g, Qt.MouseButton.LeftButton, NO, pos)  # the plain double-click opens
+    assert stem not in g.marks and opened == [stem]
+    g.shutdown()
+
+
+def test_the_end_of_label_sees_the_frame_it_just_sent_to_review(app, project):
+    """The counts are debounced: the end-of-view message must not trust a Review count that is one save behind."""
+    from framelabel.core.boxes import Box
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(1300, 800)
+    w.show()
+    app.processEvents()
+    wait_until(app, lambda: w.counts_by_view.get("review") == 0 and w.counts_are_fresh())  # Review: nothing, counted
+    w.do("go_label")
+    w.handle_key("Space")  # the first frame: the model's box is accepted, the labels agree with the model
+    w.canvas.replace_boxes([Box(10, 10, 60, 60, 0)])  # the last frame: a box the model has no proposal for
+    w.handle_key("Space")
+    text = w.central.toast.text()
+    assert "End of Label." in text and "Next: Review, 1 frames" in text and "Nothing else" not in text
+    assert w.central.toast.button.text() == "Go to Review"
     w.close()

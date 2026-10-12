@@ -32,7 +32,7 @@ T = {
     "danger": "#f87171",
     "skip": "#e0a458",
     "neutral": "#8b93a1",
-    "select": "#222d52",     # accent_soft over bg1 as a solid colour, for what the palette paints itself
+    "select": "#232941",     # accent_soft over bg1 as a solid colour, for what the palette paints itself
 }
 RADIUS = 5
 
@@ -174,8 +174,15 @@ QLabel[role="section"] {{ color: {t['text3']}; font-weight: 600; font-size: 7.5p
 QLabel[role="note"] {{ color: {t['text3']}; font-size: 8pt; }}
 QLabel[role="title"] {{ color: {t['text']}; font-size: 11pt; font-weight: 600; }}
 #contextBar {{ background: {t['bg1']}; border-bottom: 1px solid {t['line']}; }}
-#toast {{ background: rgba(20, 21, 25, 240); color: {t['text']}; border: 1px solid {t['line2']}; border-radius: 8px;
-    padding: 8px 16px; font-size: 10pt; }}
+QLabel[role="lens"] {{ color: {t['text2']}; font-size: 10pt; }}
+#palette {{ background: {t['bg2']}; border: 1px solid {t['line2']}; border-radius: 10px; }}
+#palette QLineEdit {{ background: {t['bg0']}; padding: 7px 10px; font-size: 10.5pt; }}
+#palette QListWidget {{ background: transparent; }}
+#coach {{ background: {t['bg2']}; color: {t['text2']}; border: none; border-left: 2px solid {t['accent']}; border-radius: 4px;
+    padding: 6px 8px; font-size: 8.5pt; }}
+#toast {{ background: rgba(20, 21, 25, 240); border: 1px solid {t['line2']}; border-radius: 8px; }}
+#toast QLabel {{ background: transparent; color: {t['text']}; font-size: 10pt; }}
+#toast QPushButton {{ padding: 3px 12px; }}
 """
 
 

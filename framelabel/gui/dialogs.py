@@ -506,6 +506,8 @@ class HelpDialog(QDialog):
     MOUSE = {
         "Grid": [("Click", "mark the frame 'has objects' (click again to undo)"),
                  ("Ctrl+click or middle button", "mark the frame SKIP"),
+                 ("Double-click", "open the frame in the Editor (Tab comes back to its page)"),
+                 ("Labeled tiles", "locked: a click cannot cost a frame its boxes; open it in the Editor to change it"),
                  ("Hold the right button", "peek at the photo; it closes when you let go (a quick click keeps it open)"),
                  ("1 × 1 tiles", "the tile is the photo itself: wheel zoom, drag to pan, no right click needed")],
         "Editor": [("Drag on empty space", "new box"), ("Drag a box / corner / edge", "move / resize"),
@@ -532,12 +534,20 @@ class HelpDialog(QDialog):
         def table(rows: list[tuple[str, str]]) -> str:
             return "<table cellpadding='3'>" + "".join(f"<tr><td><b>{k}</b></td><td>{v}</td></tr>" for k, v in rows) + "</table>"
 
-        out = ["<h3>How the window is organised</h3><p><b>Left:</b> the <i>view</i> (which frames: To do, Check, Done, "
-               "Browse, each with its count) and the <i>mode</i> (Grid or Editor: how you look at them). <b>Top:</b> where "
-               "you are and what you can do here. <b>Right:</b> the boxes or page marks, then the actions and settings.</p>"
-               "<p>A frame is <b>new</b> (no decision), <b>marked</b> ('has objects' ticked in the grid, boxes still to "
-               "do), <b>labeled</b>, <b>empty</b> or <b>skipped</b>. The To do and Check views only list frames without a "
-               "decision; Done lists the decisions.</p>"]
+        out = ["<h3>The way through the work</h3>"
+               "<p><b>1 Triage</b> (grid): frames the model found nothing in. Click the tiles that show an object, press "
+               "Space: the unmarked ones are saved as empty, the ticked ones go to Label.<br>"
+               "<b>2 Label</b> (editor): fix the model's boxes or draw your own, Space saves and goes on. The order can be "
+               "changed (time, unsure first, small objects first).<br>"
+               "<b>3 Review</b> (grid): saved frames that deserve a second look (possibly missed or wrong boxes, small "
+               "objects). Fix them, or mark them as checked to hide them. Amber dashed boxes are what the model sees and "
+               "the labels do not.</p>"
+               "<p>Under each stage are its <i>lenses</i> (parts of the stage, with counts). The <b>Library</b> lists "
+               "everything by decision or class. The icon of a stage is the way it opens: a grid of tiles, or a box with "
+               "handles (the editor); the <b>Grid | Editor</b> switch at the top changes it for the view you are in.</p>"
+               "<p>A frame is <b>new</b> (no decision), <b>marked</b> ('has objects' ticked in Triage, boxes still to do), "
+               "<b>labeled</b>, <b>empty</b> or <b>skipped</b>. Ctrl+Z in the grid takes back the last saved page; "
+               "<b>Ctrl+K</b> searches views, actions and frames.</p>"]
         for group in ACTION_GROUPS:
             rows = [(", ".join(keymap.map[a]), ACTION_INFO[a][1]) for a in DEFAULT_KEYMAP if ACTION_INFO.get(a, ("",))[0] == group]
             out.append(f"<h3>Keys: {'everywhere' if group == 'Everywhere' else group.lower()}</h3>" + table(rows))

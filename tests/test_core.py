@@ -480,10 +480,14 @@ def test_report_rows_count_what_each_view_shows(tmp_path):
 
     s, stems = _report_session(tmp_path)
     idx = build_index(s, s.review(), HUD)
+    from framelabel.core.views import view_frames
+
     rows = {r.queue: r for r in frame_rows(idx, 0.2, 0.3) if r.queue}
     for name, row in rows.items():  # every count equals the size of the view it links to
-        assert row.count == len(build_queue(idx, name, conf=0.2, ui_threshold=0.3)) and row.mode in ("grid", "edit")
-    assert rows["zone"].count == 2 and rows["weak"].count == 1 and rows["all"].count == 6
+        assert row.count == len(view_frames(idx, name, 0.2, 0.3)) and row.mode in ("grid", "edit")
+    # a lens is a part of its stage: stems[3] has a real proposal (so it is a frame to label) and one hidden by the zone
+    assert rows["zone"].count == 1 and rows["weak"].count == 1 and rows["all"].count == 6
+    assert rows["zone"].where == "Triage > Only in ignore zone" and rows["review"].where == "Review"
     assert capture_info(s) is None and "No capture.json" in capture_rows(None)[0].label
     (s.root / "capture.json").write_text(json.dumps({
         "saved_by_reason": {"change": 5, "burst": 1},
@@ -495,7 +499,7 @@ def test_report_rows_count_what_each_view_shows(tmp_path):
     assert got["Recorder setting: ui_filter"].where.startswith("on:")
     assert [r.count for r in capture_rows(info) if r.label == "Recorder skipped: ui"] == [40]
     line = hidden_line(idx, info, 0.2, 0.3)
-    assert "40 ui" in line and "zone-hidden proposals 2" in line and "weak only 1" in line
+    assert "40 ui" in line and "only in ignore zone 1" in line and "weak proposals only 1" in line
     assert prelabel_rows(s)[0].label == "No model proposals yet"  # no _meta.json written yet
     (s.auto_dir / "_meta.json").write_text(json.dumps({"weights": ["x/run_a/weights/best.pt"], "imgsz": 1280, "tta": True,
                                                        "conf": 0.05, "run": {"without_proposals": 4, "only_in_ignore_zone": 2,
@@ -533,27 +537,218 @@ def test_hide_reviewed_frames_only_touches_the_work_views():
         assert q(name, True) == q(name, False)
 
 
-def test_views_group_the_work_still_to_do_apart_from_the_decisions():
+def _frames_for_views():
+    """A small index that has every kind of frame the stages and their lenses care about."""
     from pathlib import Path
 
+    import numpy as np
+
     from framelabel.core.queues import FrameInfo
-    from framelabel.core.views import GROUPS, all_views, find_view, status_counts, view_counts, view_frames
 
-    def fi(name, status, conf=None):
-        return FrameInfo(Path(f"{name}.jpg"), status, confs=[conf] if conf is not None else [])
+    def fi(name, status=None, props=(), labels=(), ui=1.0, ignored=0.0):
+        """props: (conf, x1, y1, x2, y2) rows, labels: (x1, y1, x2, y2) rows, both normalized."""
+        confs = [p[0] for p in props]
+        xy = np.array([p[1:] for p in props], float).reshape(-1, 4)
+        lab = np.array(labels, float).reshape(-1, 4)
+        return FrameInfo(Path(f"{name}.jpg"), status, confs=confs, prop_h=list(xy[:, 3] - xy[:, 1]), prop_xyxy=xy,
+                         label_cls=[0] * len(lab), label_h=list(lab[:, 3] - lab[:, 1]), label_xyxy=lab, ui=ui,
+                         ignored_conf=ignored)
 
-    index = [fi("a", None), fi("b", None, 0.8), fi("c", "todo", 0.9), fi("d", "pos", 0.9), fi("e", "neg"), fi("f", "skip")]
+    box = (0.4, 0.2, 0.5, 0.6)       # a normal person
+    far = (0.4, 0.2, 0.41, 0.22)     # a far one: 0.02 high
+    return [
+        fi("n1"),                                               # new, nothing found
+        fi("n2", props=[(0.1, *box)]),                          # new, weak proposal
+        fi("n3", props=[(0.8, *box)]),                          # new, confident proposal
+        fi("n4", props=[(0.35, *far)]),                         # new, unsure + far
+        fi("n5", props=[(0.55, *box)]),                         # new, a little unsure
+        fi("m1", "todo"),                                       # marked in Triage, no proposal
+        fi("u1", ui=0.1),                                       # looks like an interface screen
+        fi("u2", ui=0.1, props=[(0.9, *box)]),                  # ... but the model sees something
+        fi("z1", ignored=0.6),                                  # only inside an ignore zone
+        fi("z2", props=[(0.7, *box)], ignored=0.6),             # a real proposal and a hidden one
+        fi("A", "pos", props=[(0.9, *box)], labels=[box]),      # labeled, the model agrees
+        fi("B", "neg", props=[(0.8, *box)]),                    # empty although the model is confident: possibly missed
+        fi("C", "pos", labels=[box]),                           # a label the model has no proposal for: possibly wrong
+        fi("D", "pos", props=[(0.9, *far)], labels=[far]),      # agrees, but a far object
+        fi("E", "skip"),
+    ]
+
+
+def test_triage_and_label_partition_the_frames_without_a_decision():
+    from framelabel.core.views import view_frames
+
+    idx = _frames_for_views()
+    stems = lambda key, **kw: [f.stem for f in view_frames(idx, key, 0.3, 0.3, **kw)]  # noqa: E731
+    triage, label = stems("triage"), stems("edit")
+    assert triage == ["n1", "n2", "u1", "z1"] and label == ["n3", "n4", "n5", "m1", "u2", "z2"]
+    undecided = [f.stem for f in idx if f.status in (None, "todo")]
+    assert sorted(triage + label) == sorted(undecided) and not set(triage) & set(label)  # every frame is in one stage
+    # a lens is a part of its stage, in the stage's order
+    assert stems("weak") == ["n2"] and stems("ui") == ["u1"] and stems("zone") == ["z1"]  # z2 / u2 are Label frames
+    assert stems("proposals") == ["n3", "n4", "n5", "u2", "z2"] and stems("todo") == ["m1"]
+    for lens, stage in (("weak", "triage"), ("ui", "triage"), ("zone", "triage"), ("proposals", "edit"), ("todo", "edit"),
+                        ("missed", "review"), ("extra", "review"), ("smalllab", "review")):
+        assert set(stems(lens)) <= set(stems(stage))
+
+
+def test_label_order_is_a_sort_not_a_view():
+    from framelabel.core.views import view_frames
+
+    idx = _frames_for_views()
+    stems = lambda key, sort: [f.stem for f in view_frames(idx, key, 0.3, 0.3, sort)]  # noqa: E731
+    assert stems("edit", "time") == ["n3", "n4", "n5", "m1", "u2", "z2"]
+    assert stems("edit", "unsure")[:2] == ["n4", "n5"]           # 0.35 is the most unsure, then 0.55; the rest keep their order
+    assert stems("edit", "unsure")[2:] == ["n3", "m1", "u2", "z2"]
+    assert stems("edit", "small")[:2] == ["n4", "n3"]            # the 0.02 high proposal first
+    assert stems("proposals", "small")[0] == "n4"                # a lens keeps its stage's order
+    assert stems("triage", "small") == stems("triage", "time")   # only the Label stage sorts
+
+
+def test_review_flags_decided_frames_and_checked_ones_drop_out():
+    from framelabel.core.views import view_counts, view_frames
+
+    idx = _frames_for_views()
+    stems = lambda key, **kw: [f.stem for f in view_frames(idx, key, 0.3, 0.3, **kw)]  # noqa: E731
+    assert stems("missed") == ["B"] and stems("extra") == ["C"] and stems("smalllab") == ["D"]
+    assert stems("review") == ["B", "C", "D"]  # the biggest disagreement first, then the frames that only have a far object
+    assert stems("review", checked={"B", "D"}) == ["C"] and stems("smalllab", checked={"D"}) == []
+    counts = view_counts(idx, ["enemy"], 0.3, 0.3, checked={"B"})
+    assert counts["review"] == 2 and counts["missed"] == 0 and counts["triage"] == 4 and counts["edit"] == 6
+    assert counts["pos"] == 3 and counts["neg"] == 1 and counts["skip"] == 1 and counts["all"] == 15
+
+
+def test_library_views_and_stage_order():
+    from framelabel.core.views import GROUPS, STAGE_ORDER, all_views, find_view, next_stage, stage_label, status_counts, view_progress
+
     views = all_views(["enemy", "corpse"])
-    assert [g for g, _ in GROUPS] == ["todo", "check", "done", "browse"]
-    assert [v.key for v in views if v.group == "browse"] == ["all", "class:0", "class:1"]
+    assert [g for g, _ in GROUPS] == ["workflow", "library"] and STAGE_ORDER == ("triage", "edit", "review")
+    assert [v.key for v in views if v.is_stage] == ["triage", "edit", "review"]
+    assert [v.step for v in views if v.is_stage] == [1, 2, 3]
+    assert [v.key for v in views if v.group == "library"] == ["all", "unreviewed", "pos", "neg", "skip", "class:0", "class:1"]
     assert len({v.key for v in views}) == len(views)
-    assert find_view("class:1", ["enemy", "corpse"]).label == "Has class corpse"
-    stems = lambda key: [f.stem for f in view_frames(index, key, 0.3, 0.3)]  # noqa: E731
-    # to-do views never list a frame that has a decision; marked frames still count as work
-    assert stems("triage") == ["a"] and stems("edit") == ["b", "c"] and stems("todo") == ["c"]
-    assert stems("unreviewed") == ["a", "b"]
-    # the done views are the decisions, 'all' is everything
-    assert stems("pos") == ["d"] and stems("neg") == ["e"] and stems("skip") == ["f"] and len(stems("all")) == 6
-    counts = view_counts(index, ["enemy", "corpse"], 0.3, 0.3)
-    assert counts["triage"] == 1 and counts["all"] == 6 and set(counts) == {v.key for v in views}
-    assert status_counts(index) == {"new": 2, "marked": 1, "labeled": 1, "empty": 1, "skipped": 1}
+    assert all(v.parent in STAGE_ORDER for v in views if v.parent)  # a lens always refines a stage
+    assert find_view("class:1", ["enemy", "corpse"]).label == "Class: corpse"
+    assert stage_label("weak") == "Triage > Weak proposals" and stage_label("edit") == "Label" and stage_label("pos") == "Labeled"
+    # the way each stage opens: the point of the design
+    assert [find_view(k).mode for k in ("triage", "edit", "review", "pos")] == ["grid", "edit", "grid", "grid"]
+    idx = _frames_for_views()
+    assert status_counts(idx) == {"new": 9, "marked": 1, "labeled": 3, "empty": 1, "skipped": 1}
+    assert next_stage("triage", {"triage": 0, "edit": 5, "review": 0}) == "edit"
+    assert next_stage("edit", {"triage": 0, "edit": 5, "review": 0}) is None
+    assert next_stage("edit", {"triage": 2, "edit": 0, "review": 3}) == "review"
+    assert next_stage("review", {"triage": 2, "edit": 0, "review": 3}) == "triage"
+    assert next_stage(None, {"triage": 0, "edit": 0, "review": 0}) is None
+    assert view_progress(idx, 0.3, {"triage": 4, "edit": 6}) == {"triage": (4, 7), "edit": (6, 10)}
+
+
+def test_a_page_save_never_changes_a_labeled_frame_and_can_be_undone(tmp_path):
+    _ui_session(tmp_path, n_game=5, n_ui=0)
+    proj = _project(tmp_path)
+    s = proj.sessions()[0]
+    stems = [p.stem for p in s.frames()]
+    ws = Workspace(proj, s)
+    ws.save(s.frames()[0], [Box(10, 10, 100, 200, 0)], 640, 360)  # labeled with one box
+    labels = s.label_path(stems[0]).read_text()
+    ws.save(s.frames()[4], [], 640, 360, "skip")
+    # a labeled frame is left alone whatever its mark says (a stale SKIP mark must not cost it its boxes)
+    undo = ws.commit_page(stems, {stems[1]: "people", stems[4]: "people", stems[0]: "skip"})
+    assert ws.review.get(stems[0]) == "pos" and s.label_path(stems[0]).read_text() == labels
+    assert [ws.review.get(x) for x in stems[1:]] == ["todo", "neg", "neg", "todo"]
+    assert set(undo) == set(stems[1:])  # the labeled frame was not touched, so it is not in the record
+    assert undo[stems[1]] == (None, None, "todo") and undo[stems[2]] == (None, None, "neg") and undo[stems[4]][2] == "todo"
+    # undo puts back statuses and label files exactly (the skipped frame stays skipped, the new ones are new again)
+    restored, left = ws.undo_page(undo)
+    assert sorted(restored) == sorted(stems[1:]) and left == []
+    assert [ws.review.get(x) for x in stems] == ["pos", None, None, None, "skip"]
+    assert s.label_path(stems[0]).read_text() == labels and not s.label_path(stems[2]).exists()
+    assert not s.label_path(stems[4]).exists() and ws.index[ws.by_stem[stems[2]]].status is None
+
+
+def test_undoing_a_page_never_undoes_later_work(tmp_path):
+    _ui_session(tmp_path, n_game=4, n_ui=0)
+    proj = _project(tmp_path)
+    s = proj.sessions()[0]
+    stems = [p.stem for p in s.frames()]
+    ws = Workspace(proj, s)
+    undo = ws.commit_page(stems, {stems[0]: "people", stems[1]: "people"})  # both marked in Triage; the rest empty
+    assert [ws.review.get(x) for x in stems] == ["todo", "todo", "neg", "neg"]
+    ws.save(s.frames()[0], [Box(10, 10, 100, 200, 0)], 640, 360)  # later, in Label: the first one gets its box
+    ws.save(s.frames()[2], [Box(20, 20, 80, 160, 1)], 640, 360)  # and a frame that was saved as empty turns out to have one
+    restored, left = ws.undo_page(undo)
+    assert sorted(left) == sorted([stems[0], stems[2]]) and sorted(restored) == sorted([stems[1], stems[3]])
+    assert ws.review.get(stems[0]) == "pos" and s.label_path(stems[0]).read_text().strip() != ""  # the boxes are still there
+    assert ws.review.get(stems[2]) == "pos" and s.label_path(stems[2]).read_text().strip() != ""
+    assert ws.review.get(stems[1]) is None and ws.review.get(stems[3]) is None  # the rest is undone
+    assert ws.undo_page({}) == ([], [])
+
+
+def test_a_failing_note_file_never_blocks_a_decision(tmp_path, monkeypatch):
+    _ui_session(tmp_path, n_game=2, n_ui=0)
+    proj = _project(tmp_path)
+    s = proj.sessions()[0]
+    stems = [p.stem for p in s.frames()]
+    ws = Workspace(proj, s)
+    ws.check([stems[0]])
+
+    def broken(*_a, **_k):
+        raise PermissionError("the app folder is read-only")
+
+    monkeypatch.setattr("framelabel.core.workspace.save_checked", broken)
+    assert ws.save(s.frames()[0], [Box(10, 10, 100, 200, 0)], 640, 360) == "pos"  # the label and the status are saved
+    assert s.label_path(stems[0]).read_text().strip() and Workspace(proj, s).review.get(stems[0]) == "pos"
+    assert stems[0] not in ws.checked  # and the in-memory note is right
+    ws.check([stems[1]])  # no exception either
+    assert stems[1] in ws.checked
+
+
+def test_checked_frames_are_a_personal_note_kept_outside_the_session(tmp_path):
+    from framelabel.core.checked import checked_path, load_checked
+
+    _ui_session(tmp_path, n_game=3, n_ui=0)
+    proj = _project(tmp_path)
+    s = proj.sessions()[0]
+    stems = [p.stem for p in s.frames()]
+    ws = Workspace(proj, s)
+    ws.check([stems[0], stems[1]])
+    assert load_checked(s) == {stems[0], stems[1]} and s.root not in checked_path(s).parents  # app data, not the session
+    assert not any(p.name.startswith("checked") for p in s.root.iterdir())
+    ws.save(s.frames()[0], [Box(10, 10, 100, 200, 0)], 640, 360)  # a decision makes the frame look-at-able again
+    assert load_checked(s) == {stems[1]} and Workspace(proj, s).checked == {stems[1]}
+    ws.uncheck([stems[1]])
+    assert load_checked(s) == set()
+
+
+def test_ghosts_are_the_proposals_a_decided_frame_does_not_cover(tmp_path):
+    _ui_session(tmp_path, n_game=3, n_ui=0)
+    proj = _project(tmp_path)
+    s = proj.sessions()[0]
+    stems = [p.stem for p in s.frames()]
+    s.auto_dir.mkdir()
+    s.auto_path(stems[0]).write_text("0 0.5 0.5 0.1 0.3 0.90\n0 0.2 0.5 0.1 0.3 0.70\n0 0.8 0.5 0.1 0.3 0.10")
+    ws = Workspace(proj, s, conf=0.3)
+    assert ws.ghosts(s.frames()[0], 640, 360) == []  # a frame without a decision shows its proposals as boxes
+    ws.save(s.frames()[0], [Box(0.45 * 640, 0.35 * 360, 0.55 * 640, 0.65 * 360, 0)], 640, 360)  # covers the 0.90 one
+    ghosts = ws.ghosts(s.frames()[0], 640, 360)
+    assert [round(g.conf, 2) for g in ghosts] == [0.7]  # the 0.10 one is below the shown confidence
+    ws.save(s.frames()[0], [], 640, 360)
+    assert [round(g.conf, 2) for g in ws.ghosts(s.frames()[0], 640, 360)] == [0.9, 0.7]
+
+
+def test_pace_needs_enough_decisions_and_forgets_old_ones():
+    from framelabel.core.pace import Pace, format_minutes, pace_line
+
+    now = [1000.0]
+    pace = Pace(clock=lambda: now[0])
+    assert pace.per_minute() is None and pace_line(pace, 100) == ""
+    pace.add(5)
+    now[0] += 60
+    assert pace.per_minute() is None  # five decisions say nothing yet
+    pace.add(25)
+    rate = pace.per_minute()
+    assert rate == 30.0  # 30 decisions in the 60 s since the first one
+    assert pace.minutes_left(90) == 3.0 and pace_line(pace, 90) == "30 per min, about 3 min left"
+    assert pace_line(pace, 0) == ""
+    now[0] += 700  # everything is older than ten minutes now
+    assert pace.per_minute() is None
+    assert format_minutes(0.3) == "under a minute" and format_minutes(80) == "1 h 20 min" and format_minutes(3000) == "2 d 2 h"

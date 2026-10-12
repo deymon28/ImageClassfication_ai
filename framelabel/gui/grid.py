@@ -1,6 +1,9 @@
-"""Grid triage: a page of frame tiles to confirm quickly. LMB marks 'has objects', MMB or Ctrl+LMB marks 'skip',
-RMB opens a full-size preview (wheel zoom, drag pan, click toggles the mark). Committing the page saves unmarked
-frames as empty, marked ones go to the edit queue, skip marks are saved as skipped."""
+"""A page of frame tiles. LMB marks 'has objects', MMB or Ctrl+LMB marks 'skip', double-click opens the frame in the
+editor, RMB peeks at the photo (wheel zoom, drag pan). Committing the page saves unmarked frames as empty, marked ones
+go to the label stage, skip marks are saved as skipped; labeled frames are locked (they only open in the editor).
+
+Tiles show the model's proposals (dotted when weak, dashed when the labels do not cover them) and, for labeled frames,
+their boxes in the class colours, so the same grid serves triage, review and browsing."""
 from __future__ import annotations
 
 import time
@@ -9,11 +12,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QToolTip, QWidget
 
-from framelabel.core.queues import FrameInfo
+from framelabel.core.queues import FrameInfo, unmatched_proposals
 from framelabel.core.view import View
 from .canvas import to_qimage
 from .theme import qc
@@ -22,6 +25,7 @@ GAP = 4
 TILE_RADIUS = 4
 STATUS_TAGS = {"neg": "empty", "pos": "labeled", "skip": "skipped", "todo": "marked"}
 STATUS_TAG_COLORS = {"neg": "neutral", "pos": "ok", "skip": "skip", "todo": "warn"}
+STORED_MARK = {"pos": "people", "todo": "people", "skip": "skip"}  # the mark a decision already stands for
 PEEK_HOLD_S = 0.3  # a right button held longer than this is a 'peek': the photo closes when the button is released
 RESIZE_SETTLE_MS = 150  # while the window is being resized the tiles of the old size are stretched instead of reloaded
 
@@ -44,6 +48,8 @@ class Grid(QWidget):
     marks_changed = pyqtSignal()
     page_changed = pyqtSignal()
     tile_ready = pyqtSignal()  # a tile page finished loading in the pool (emitted from the pool thread)
+    open_requested = pyqtSignal(str)  # double-click: open this frame (stem) in the editor
+    locked = pyqtSignal(str)          # a click on a labeled frame (stem): it cannot be changed from the grid
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,6 +62,10 @@ class Grid(QWidget):
         self.ui_threshold = 0.3
         self.show_weak = True
         self.show_ignored = False  # draw proposals hidden by ignore zones (the "zone" view)
+        self.class_names: list[str] = []
+        self.conf = 0.3            # the shown confidence: proposals from it up are drawn as proposals, below it as weak
+        self.by_stem: dict[str, FrameInfo] = {}
+        self.overlay_cache: dict[tuple, tuple] = {}
         self.aspect = (9, 16)
         self.pool = ThreadPoolExecutor(2)
         self.cache: dict[tuple, Future] = {}
@@ -112,6 +122,8 @@ class Grid(QWidget):
 
     def set_items(self, items: list[FrameInfo], page: int = 0, initial_mark=None) -> None:
         self.items = items
+        self.by_stem = {fi.stem: fi for fi in items}
+        self.overlay_cache.clear()
         self.clear_cache()
         if items:
             img = cv2.imread(str(items[0].path), cv2.IMREAD_REDUCED_COLOR_4)
@@ -129,13 +141,100 @@ class Grid(QWidget):
         self.page_changed.emit()
         self.update()
 
-    def toggle(self, stem: str, kind: str) -> None:
+    def toggle(self, stem: str, kind: str) -> bool:
+        """Tick / untick a mark. A labeled frame cannot be changed from the grid (a stray click must not cost its
+        boxes): that says so through `locked` and changes nothing. Returns whether the mark changed."""
+        fi = self.by_stem.get(stem)
+        if fi is not None and fi.status == "pos":
+            self.locked.emit(stem)
+            return False
         if self.marks.get(stem) == kind:
             del self.marks[stem]
         else:
             self.marks[stem] = kind
         self.marks_changed.emit()
         self.update()
+        return True
+
+    def pending(self, fi: FrameInfo) -> str | None:
+        """The mark that is not saved yet: what the tile shows as a change ('people', 'skip', 'empty'), None when the
+        tile just shows the frame's decision."""
+        mark, stored = self.marks.get(fi.stem), STORED_MARK.get(fi.status)
+        if mark == stored:
+            return None
+        return mark or "empty"
+
+    def tooltip_for(self, fi: FrameInfo) -> str:
+        """What a tile says when the mouse rests on it: the decision, the boxes, what the model saw."""
+        lines = [f"{fi.stem}  -  {STATUS_TAGS.get(fi.status or '', 'new')}"]
+        if fi.status == "pos" and fi.label_cls:
+            names = {}
+            for c in fi.label_cls:
+                name = self.class_names[c] if 0 <= c < len(self.class_names) else str(c)
+                names[name] = names.get(name, 0) + 1
+            lines.append("boxes: " + ", ".join(f"{n} x{k}" if k > 1 else n for n, k in names.items()))
+        if fi.confs:
+            lines.append(f"model: {len(fi.confs)} proposal{'s' if len(fi.confs) != 1 else ''}, best {fi.max_conf:.2f}")
+        else:
+            lines.append("model: no proposals" + (f" (hidden by an ignore zone: {fi.ignored_conf:.2f})" if fi.ignored_conf else ""))
+        if fi.ui < self.ui_threshold:
+            lines.append("looks like an interface screen (menu, map, inventory)")
+        return "\n".join(lines)
+
+    def event(self, e) -> bool:
+        if e.type() == QEvent.Type.ToolTip and self.preview is None:
+            i = self.tile_at(e.pos().x(), e.pos().y())
+            if i >= 0:
+                QToolTip.showText(e.globalPos(), self.tooltip_for(self.page_items()[i]), self)
+            else:
+                QToolTip.hideText()
+            return True
+        return super().event(e)
+
+    def hovered_stem(self) -> str | None:
+        """The frame under the mouse, else the first one of the page (what a key like O acts on)."""
+        items = self.page_items()
+        if 0 <= self.hover < len(items):
+            return items[self.hover].stem
+        return items[0].stem if items else None
+
+    # ---------------- what is drawn on a frame
+    def overlays(self, fi: FrameInfo) -> tuple[list, list, list, list]:
+        """(labels, proposals, weak, hidden) of a frame as normalized boxes: labels (xyxy, class) of a labeled frame,
+        the proposals at the shown confidence the labels do not cover, the weak ones (new frames only), and the ones
+        an ignore zone hides."""
+        key = (fi.stem, round(self.conf, 3))
+        hit = self.overlay_cache.get(key)
+        if hit is None or hit[0] is not fi:  # a saved frame is a new FrameInfo: its boxes are read again
+            labels = ([(tuple(b), c) for b, c in zip(fi.label_xyxy, fi.label_cls)]
+                      if fi.status == "pos" and fi.label_xyxy is not None else [])
+            strong = [tuple(b) for b in unmatched_proposals(fi, self.conf)]
+            undecided = fi.status in (None, "todo")
+            weak = ([(tuple(b), c) for b, c in zip(fi.prop_xyxy, fi.confs) if c < self.conf]
+                    if undecided and fi.prop_xyxy is not None else [])
+            hidden = [tuple(b) for b in fi.ignored_xyxy] if fi.ignored_xyxy is not None else []
+            hit = self.overlay_cache[key] = (fi, labels, strong, weak, hidden)
+        return hit[1:]
+
+    def draw_overlays(self, p: QPainter, fi: FrameInfo, rect_of, width: float = 1.0) -> None:
+        """Paint the boxes of a frame; `rect_of(x1, y1, x2, y2)` maps normalized coordinates to the widget."""
+        labels, strong, weak, hidden = self.overlays(fi)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        if self.show_weak:
+            for (x1, y1, x2, y2), c in weak:
+                p.setPen(QPen(QColor(255, 200, 0, 90 + int(150 * min(c / 0.3, 1.0))), width, Qt.PenStyle.DotLine))
+                p.drawRect(rect_of(x1, y1, x2, y2))
+        p.setPen(QPen(qc("warn"), width * 1.4, Qt.PenStyle.DashLine))
+        for x1, y1, x2, y2 in strong:
+            p.drawRect(rect_of(x1, y1, x2, y2))
+        for (x1, y1, x2, y2), cls in labels:
+            col = self.class_colors[cls] if 0 <= cls < len(self.class_colors) else QColor("#ffffff")
+            p.setPen(QPen(col, width * 1.6))
+            p.drawRect(rect_of(x1, y1, x2, y2))
+        if self.show_ignored and hidden:
+            p.setPen(QPen(QColor(0, 220, 255), width * 2, Qt.PenStyle.DotLine))
+            for x1, y1, x2, y2 in hidden:
+                p.drawRect(rect_of(x1, y1, x2, y2))
 
     # ---------------- tiles
     def _load(self, page: int, tw: int, th: int) -> list[QImage]:
@@ -225,29 +324,25 @@ class Grid(QWidget):
                 p.drawImage(rect, tiles[i])
             else:
                 p.fillRect(rect, qc("bg2"))
-            if self.show_weak and fi.prop_xyxy is not None:
-                for (bx1, by1, bx2, by2), c in zip(fi.prop_xyxy, fi.confs):
-                    col = QColor(255, 200, 0, 90 + int(150 * min(c / 0.3, 1.0)))
-                    p.setPen(QPen(col, 1, Qt.PenStyle.DotLine))
-                    p.drawRect(QRectF(x + bx1 * tw, y + by1 * th, (bx2 - bx1) * tw, (by2 - by1) * th))
+            self.draw_overlays(p, fi, lambda x1, y1, x2, y2, x=x, y=y, tw=tw, th=th:
+                               QRectF(x + x1 * tw, y + y1 * th, (x2 - x1) * tw, (y2 - y1) * th))
             if self.show_ignored and fi.ignored_xyxy is not None:
-                p.setPen(QPen(QColor(0, 220, 255), 2, Qt.PenStyle.DotLine))
-                for bx1, by1, bx2, by2 in fi.ignored_xyxy:
-                    p.drawRect(QRectF(x + bx1 * tw, y + by1 * th, (bx2 - bx1) * tw, (by2 - by1) * th))
                 self.pill(p, x + 6, y + 6, f"ignore zone {fi.ignored_conf:.2f}", QColor(0, 0, 0, 170), QColor(0, 220, 255))
+            if fi.status == "skip" and self.pending(fi) is None:
+                p.fillRect(rect, QColor(10, 11, 14, 120))  # a skipped frame is faded: it is out of the dataset
             # caption: a dark fade at the bottom with the frame name and its state
             fade = QLinearGradient(0, y + th - 26, 0, y + th)
             fade.setColorAt(0, QColor(0, 0, 0, 0))
             fade.setColorAt(1, QColor(0, 0, 0, 180))
             p.fillRect(QRectF(x, y + th - 26, tw, 26), fade)
             p.restore()
-            mark = self.marks.get(fi.stem)
-            if mark == "people":
+            change = self.pending(fi)
+            if change == "people":
                 p.setPen(QPen(qc("accent"), 3))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), TILE_RADIUS, TILE_RADIUS)
                 self.pill(p, x + 6, y + 6, "HAS OBJECTS", qc("accent"), QColor("#ffffff"))
-            elif mark == "skip":
+            elif change == "skip":
                 p.save()
                 p.setClipPath(clip)
                 p.fillRect(rect, QColor(10, 11, 14, 175))
@@ -256,11 +351,15 @@ class Grid(QWidget):
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), TILE_RADIUS, TILE_RADIUS)
                 self.pill(p, x + 6, y + 6, "SKIP", qc("bg3"), qc("text2"))
+            elif change == "empty":
+                self.pill(p, x + 6, y + 6, "EMPTY", qc("bg3"), qc("text2"))
             elif i == self.hover:
                 p.setPen(QPen(QColor(255, 255, 255, 150), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), TILE_RADIUS, TILE_RADIUS)
             tag = STATUS_TAGS.get(fi.status or "", "")
+            if fi.status == "pos" and fi.label_cls:
+                tag += f" {len(fi.label_cls)}"
             right = f"model {fi.max_conf:.2f}" if fi.max_conf > 0 else ""
             if fi.ui < self.ui_threshold:
                 right += "  UI?"
@@ -316,15 +415,9 @@ class Grid(QWidget):
         p.drawImage(QRectF(QPointF(*v.to_widget(x1, y1)), QPointF(*v.to_widget(x2, y2))), self.preview_q,
                     QRectF(x1, y1, x2 - x1, y2 - y1))
         fi = self.preview
-        if fi.ignored_xyxy is not None and self.show_ignored:
-            p.setPen(QPen(QColor(0, 220, 255), 2, Qt.PenStyle.DotLine))
-            for bx1, by1, bx2, by2 in fi.ignored_xyxy:
-                p.drawRect(QRectF(QPointF(*v.to_widget(bx1 * v.iw, by1 * v.ih)), QPointF(*v.to_widget(bx2 * v.iw, by2 * v.ih))))
-        if fi.prop_xyxy is not None and self.show_weak:
-            for (bx1, by1, bx2, by2), c in zip(fi.prop_xyxy, fi.confs):
-                p.setPen(QPen(QColor(255, 200, 0, 200), 1, Qt.PenStyle.DotLine))
-                p.drawRect(QRectF(QPointF(*v.to_widget(bx1 * v.iw, by1 * v.ih)), QPointF(*v.to_widget(bx2 * v.iw, by2 * v.ih))))
-        kind = self.marks.get(fi.stem, "")
+        self.draw_overlays(p, fi, lambda x1, y1, x2, y2: QRectF(QPointF(*v.to_widget(x1 * v.iw, y1 * v.ih)),
+                                                               QPointF(*v.to_widget(x2 * v.iw, y2 * v.ih))), width=1.4)
+        kind = self.pending(fi) or ""
         if kind == "people":
             p.setPen(QPen(qc("accent"), 5))
             p.drawRect(self.rect().adjusted(2, 2, -2, -2))
@@ -332,8 +425,9 @@ class Grid(QWidget):
             p.fillRect(self.rect(), QColor(10, 11, 14, 130))
             p.setPen(QPen(qc("line2"), 5))
             p.drawRect(self.rect().adjusted(2, 2, -2, -2))
-        mark = {"people": "HAS OBJECTS", "skip": "SKIP"}.get(kind, "not marked")
-        hint = ("click: has objects | Ctrl+click or MMB: skip | wheel: zoom | drag: pan | Z: fit" if self.sticky
+        status = STATUS_TAGS.get(fi.status or "", "new")
+        mark = {"people": "HAS OBJECTS", "skip": "SKIP", "empty": "EMPTY"}.get(kind, status)
+        hint = ("click: has objects | Ctrl+click or MMB: skip | double-click: editor | wheel: zoom | drag: pan | Z: fit" if self.sticky
                 else "click: toggle 'has objects' | RMB / Esc: back")
         self.badge(p, 10, 10, f"{fi.stem}  [{mark}]  zoom {v.zoom:.1f}x   {hint}", qc("text"))
 
@@ -373,6 +467,27 @@ class Grid(QWidget):
         elif e.button() == Qt.MouseButton.RightButton:
             self.open_preview(fi)
             self.peek_since = time.monotonic()  # held: closes on release; a quick click leaves it open (click again to close)
+
+    def mouseDoubleClickEvent(self, e) -> None:
+        """A plain double-click opens the frame in the editor. The first click of the pair already ticked the tile, so it is
+        ticked back (the same kind of mark, which Ctrl and the middle button change); only the plain click opens."""
+        left = e.button() == Qt.MouseButton.LeftButton
+        skip = e.button() == Qt.MouseButton.MiddleButton or (left and bool(e.modifiers() & Qt.KeyboardModifier.ControlModifier))
+        if not (left or skip):
+            return
+        if self.preview is not None and not self.sticky:
+            self.mousePressEvent(e)
+            return
+        fi = self.preview
+        if fi is None:
+            i = self.tile_at(e.position().x(), e.position().y())
+            if i < 0:
+                return
+            fi = self.page_items()[i]
+        if fi.status != "pos":
+            self.toggle(fi.stem, "skip" if skip else "people")
+        if not skip:
+            self.open_requested.emit(fi.stem)
 
     def mouseMoveEvent(self, e) -> None:
         pos = e.position()

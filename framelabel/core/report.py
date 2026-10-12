@@ -12,10 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .queues import FrameInfo, build_queue
-from .views import GROUPS, find_view, view_frames
+from .views import find_view, stage_label, view_frames
 from .session import Session
 
-GROUP_NAMES = dict(GROUPS)
 CAPTURE_REASONS = {
     "ui": "interface screen (menu, inventory, map...) dropped by the recorder's UI filter",
     "duplicate": "almost identical to the previous saved frame",
@@ -69,31 +68,34 @@ def capture_rows(info: dict | None) -> list[ReportRow]:
     return rows
 
 
-QUEUE_ROWS = [  # (queue, label, note): the label says what the frames are, the view name says where they are
-    ("triage", "Model found nothing (no proposal at the shown confidence)",
-     "confirm as empty a page at a time; frames with weak or zone-hidden proposals are in here too"),
-    ("weak", "...of which with a weak proposal (below the shown confidence)",
+QUEUE_ROWS = [  # (view, label, note): the label says what the frames are, the view name says where they are
+    ("triage", "New frames the model found nothing in (no proposal at the shown confidence)",
+     "confirm as empty a page at a time; the three lines below are parts of it"),
+    ("weak", "...with a weak proposal (below the shown confidence)",
      "dotted boxes in the grid; press W in the editor to see them"),
-    ("zone", "Proposals hidden by an ignore zone",
-     "the model saw something inside the ignore zone only (e.g. the HUD icon): the frame looks empty; shown as cyan boxes"),
-    ("ui", "Suspected interface screens (framelabel's own detection)",
-     "pre-marked SKIP when a page of the grid is committed unless you change the mark"),
-    ("edit", "To label: has proposals at the shown confidence, or marked in the grid", ""),
-    ("uncertain", "Unsure proposals", "confidence 0.15-0.6, no decision yet"),
-    ("small", "Small (far) objects", "no decision yet"),
-    ("disagree", "Model disagrees with the labels", "confident proposals without a label, labels without a proposal"),
+    ("zone", "...with a proposal only inside an ignore zone",
+     "e.g. the HUD icon: the frame looks empty; the hidden boxes are cyan"),
+    ("ui", "...that look like interface screens (framelabel's own detection)",
+     "pre-marked SKIP when a page of the grid is saved unless you change the mark"),
+    ("edit", "New frames with a proposal, plus the frames you marked in Triage", "the frames to label in the editor"),
+    ("todo", "...marked 'has objects' in Triage", "no boxes yet"),
+    ("review", "Saved frames that deserve a second look", "the three lines below are parts of it (checked frames left out)"),
+    ("missed", "...where the model is confident about a box that was not drawn", "possibly missed objects"),
+    ("extra", "...with a box the model has no proposal for", "possibly wrong, or hard objects"),
+    ("smalllab", "...labeled with a small (far) object", "check that the box is tight"),
     ("neg", "Saved as empty", ""),
     ("skip", "Skipped", "set by you in the grid / editor, or accepted from the interface suggestion"),
     ("unreviewed", "New: no decision yet", ""),
 ]
 
 
-def frame_rows(index: list[FrameInfo], conf: float, ui_threshold: float, class_names: list[str] | None = None) -> list[ReportRow]:
-    rows = [ReportRow("Frames in the session", len(index), "all frames on disk", mode="edit", queue="all")]
-    for queue, label, note in QUEUE_ROWS:
-        view = find_view(queue, class_names or [])
-        n = len(view_frames(index, queue, conf, ui_threshold))
-        rows.append(ReportRow(label, n, f"{GROUP_NAMES[view.group]}: {view.label}", note, view.mode, queue))
+def frame_rows(index: list[FrameInfo], conf: float, ui_threshold: float, class_names: list[str] | None = None,
+               checked=frozenset()) -> list[ReportRow]:
+    rows = [ReportRow("Frames in the session", len(index), "all frames on disk", mode="grid", queue="all")]
+    for key, label, note in QUEUE_ROWS:
+        view = find_view(key, class_names or [])
+        n = len(view_frames(index, key, conf, ui_threshold, checked=checked))
+        rows.append(ReportRow(label, n, stage_label(key), note, view.mode, key))
     return rows
 
 
@@ -122,13 +124,11 @@ def prelabel_rows(session: Session) -> list[ReportRow]:
 
 
 def hidden_line(index: list[FrameInfo], capture: dict | None, conf: float, ui_threshold: float) -> str:
-    """One line for the main window: what is filtered out of the normal views."""
-    n_ui = len(build_queue(index, "ui", conf=conf, ui_threshold=ui_threshold))
-    n_zone = len(build_queue(index, "zone", conf=conf, ui_threshold=ui_threshold))
-    n_weak = len(build_queue(index, "weak", conf=conf, ui_threshold=ui_threshold))
-    parts = [f"suspected interface screens {n_ui}", f"zone-hidden proposals {n_zone}", f"weak only {n_weak}"]
+    """One line for the main window: what hides in the Triage views, and what the recorder dropped."""
+    n = {k: len(view_frames(index, k, conf, ui_threshold)) for k in ("ui", "zone", "weak")}
+    parts = [f"interface screens {n['ui']}", f"only in ignore zone {n['zone']}", f"weak proposals only {n['weak']}"]
     if capture:
         skipped = capture.get("skipped_by_reason") or {}
         parts.append(f"recorder dropped: {skipped.get('ui', 0)} ui, {skipped.get('duplicate', 0)} duplicate, "
                      f"{skipped.get('not_game', 0)} not game")
-    return "Filtered: " + "; ".join(parts) + "  (View > Session report)"
+    return "Triage: " + "; ".join(parts) + "  (Report for details)"

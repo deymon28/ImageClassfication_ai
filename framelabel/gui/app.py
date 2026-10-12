@@ -14,7 +14,7 @@ from pathlib import Path
 import cv2
 from PyQt6.QtCore import QEvent, QObject, QSettings, QSortFilterProxyModel, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPainter, QPixmap
-from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
+from PyQt6.QtWidgets import (QMenu, QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
                              QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListView,
                              QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
                              QPushButton, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QToolButton, QVBoxLayout,
@@ -25,7 +25,9 @@ from framelabel.core.project import Project, folder_project
 from framelabel.core.propagate import propagate
 from framelabel.core.queues import FrameInfo
 from framelabel.core.session import Session, session_overview
-from framelabel.core.views import all_views, find_view, status_counts, view_counts
+from framelabel.core.pace import Pace
+from framelabel.core.queues import SORTS
+from framelabel.core.views import BY_KEY, all_views, status_counts
 from framelabel.core.workspace import Workspace
 from framelabel.core import index_cache
 from framelabel.perf import setup_logging, timed
@@ -34,13 +36,17 @@ from .frame_list import FrameListModel
 from .grid import Grid
 from .keys import ACTION_INFO, Keymap, key_name
 from .theme import T, apply_theme
-from .panels import Central, ContextBar, ModeSwitch, SwitchBox, ViewTree, grid_size_text, note_label, section_label, GRID_SIZES
+from .palette import CommandPalette, Entry
+from .panels import (CoachCard, Central, ContextBar, GRID_SIZES, SwitchBox, ViewTree, grid_size_text, note_label,
+                     section_label)
 from .process_job import ProcessJob
 from .workers import Job, start_job, stop_jobs
+from .workflow import STAGE_KEYS, WorkflowMixin
 
 ROOT = Path(__file__).resolve().parents[2]
 log = logging.getLogger("framelabel")
 SIDE_WIDTH_LEFT, SIDE_WIDTH_RIGHT = 224, 236   # the side panels stay narrow: the photos get the rest
+STAGE_BY_ACTION = {action: stage for stage, action in STAGE_KEYS.items()}
 COUNTS_DEBOUNCE_MS = 400   # the counts next to the views are recomputed this long after the last change
 CONF_PRESETS = (0.10, 0.20, 0.30, 0.50)
 
@@ -72,7 +78,7 @@ def make_settings() -> QSettings:
     return QSettings("framelabel", "framelabel")
 
 
-class MainWindow(QMainWindow):
+class MainWindow(WorkflowMixin, QMainWindow):
     session_loaded = pyqtSignal()  # a session's workspace was applied (also used by tests)
 
     def __init__(self, target: Path | None = None):
@@ -87,6 +93,12 @@ class MainWindow(QMainWindow):
         self.mode = "grid"
         self.panels_visible = True
         self.view_key = "triage"  # the view (set of frames) shown; the mode says how it is shown
+        self.sort_key = str(self.settings.value("sort", "time"))  # the order of the Label stage
+        if self.sort_key not in dict(SORTS):
+            self.sort_key = "time"
+        self.pace = Pace()
+        self.lead: str | None = None  # what was just done to a frame: the end-of-view message starts with it
+        self.undo_pages: list[dict] = []  # saved grid pages that can be taken back, newest last
         self.queue: list[FrameInfo] = []
         self.idx = 0
         self.cur_path: Path | None = None
@@ -118,12 +130,14 @@ class MainWindow(QMainWindow):
         self.resize(1600, 950)
         self.build_ui()
         self.build_menus()
-        self.size_docks()
-        QTimer.singleShot(0, self.size_docks)  # once the window has its size
         QApplication.instance().installEventFilter(self)
         geo = self.settings.value("geometry")
         if geo is not None:
             self.restoreGeometry(geo)
+        state = self.settings.value("dock_state")
+        self.docks_sized = bool(state) and self.restoreState(state)  # the panel widths you left them at
+        if not self.docks_sized:
+            self.size_docks()
         if target is not None:
             QTimer.singleShot(0, lambda: self.open_target(Path(target)))
         elif (recent := self.recent()) and Path(recent[0]).exists():
@@ -170,7 +184,14 @@ class MainWindow(QMainWindow):
         self.context_bar = ContextBar()
         self.central = Central(self.context_bar, self.stack)
         self.setCentralWidget(self.central)
+        self.mode_switch = self.context_bar.mode_switch
+        self.mode_switch.mode_chosen.connect(self.on_mode_chosen)
         self.context_bar.grid_size_chosen.connect(self.set_grid_size)
+        self.context_bar.sort_chosen.connect(self.on_sort_chosen)
+        self.context_bar.set_sort(self.sort_key)
+        self.grid.open_requested.connect(self.open_in_editor)
+        self.grid.locked.connect(lambda _stem: self.toast(
+            f"Labeled frame: double-click it (or press {self.keymap.first('open_frame')}) to edit its boxes"))
         self.canvas.changed.connect(self.on_boxes_changed)
         self.canvas.selection_changed.connect(self.on_selection)
         self.canvas.hover_info.connect(lambda s: self.pos_label.setText(s))
@@ -216,11 +237,12 @@ class MainWindow(QMainWindow):
         self.counts_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         self.counts_label.setProperty("role", "note")
         self.counts_label.setTextFormat(Qt.TextFormat.RichText)
+        self.pace_label = QLabel()
+        self.pace_label.setProperty("role", "note")
+        self.pace_label.setVisible(False)
         lv.addWidget(self.done_bar)
         lv.addWidget(self.counts_label)
-        self.mode_switch = ModeSwitch()
-        self.mode_switch.mode_chosen.connect(self.on_mode_chosen)
-        lv.addWidget(self.mode_switch)
+        lv.addWidget(self.pace_label)
 
         self.view_tree = ViewTree()
         self.view_tree.view_chosen.connect(self.on_view_chosen)
@@ -239,10 +261,11 @@ class MainWindow(QMainWindow):
         self.frame_list.activated.connect(self.on_frame_clicked)
         self.frame_list.clicked.connect(self.on_frame_clicked)
         self.frames_title = section_label("Frames")
+        self.coach = CoachCard()
         lower = QWidget()
         lw = QVBoxLayout(lower)
         lw.setContentsMargins(0, 0, 0, 0)
-        for w in (self.frames_title, self.frame_filter, self.frame_list):
+        for w in (self.coach, self.frames_title, self.frame_filter, self.frame_list):
             lw.addWidget(w)
         split = self.left_split = QSplitter(Qt.Orientation.Vertical)
         self.view_tree.expanded.connect(lambda _i: self.fit_view_tree())
@@ -300,11 +323,13 @@ class MainWindow(QMainWindow):
         self.frame_dock.setWidget(ep)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.frame_dock)
 
-    ACTION_TITLES = {"accept_next": "Save + next", "empty_next": "Empty", "skip_next": "Skip",
+    KEY_OF = {"undo_page": "undo"}  # a button whose action is named differently from the key it shows
+    ACTION_TITLES = {"undo_page": "Undo page", "open_frame": "Open in editor", "mark_checked": "Mark checked",
+                     "accept_next": "Save + next", "empty_next": "Empty", "skip_next": "Skip",
                      "prev": "Previous", "next": "Next", "undo": "Undo", "copy_prev": "Copy prev",
                      "propagate_prev": "Track prev", "sam_fit": "SAM fit",
                      "accept_proposals": "Accept all", "commit_page": "Commit page",
-                     "prev_page": "Previous page", "next_page": "Next page", "grid_view": "Next view",
+                     "prev_page": "Previous page", "next_page": "Next page", "grid_view": "Next stage",
                      "reload": "Reload"}
 
     def action_page(self, actions: tuple[str, ...], wide: str) -> QWidget:
@@ -340,11 +365,11 @@ class MainWindow(QMainWindow):
         tv.addWidget(section_label("Actions"))
         self.action_buttons: dict[str, QPushButton] = {}
         self.action_pages = SwitchBox()
-        self.action_pages.addWidget(self.action_page(("commit_page", "prev_page", "next_page", "grid_view", "reload"),
-                                                     "commit_page"))
+        self.action_pages.addWidget(self.action_page(("commit_page", "prev_page", "next_page", "undo_page", "open_frame",
+                                                      "grid_view", "reload"), "commit_page"))
         self.action_pages.addWidget(self.action_page(("accept_next", "empty_next", "skip_next", "prev", "next", "undo",
-                                                      "accept_proposals", "copy_prev", "propagate_prev", "sam_fit"),
-                                                     "accept_next"))
+                                                      "mark_checked", "accept_proposals", "copy_prev", "propagate_prev",
+                                                      "sam_fit"), "accept_next"))
         tv.addWidget(self.action_pages)
 
         tv.addWidget(section_label("Proposals from confidence"))
@@ -382,12 +407,17 @@ class MainWindow(QMainWindow):
         tv.addWidget(self.sam_check)
         tv.addWidget(self.carry_check)
         tv.addStretch(1)
-        help_btn = QToolButton()
-        help_btn.setText("Keyboard and mouse help  (F1)")
-        help_btn.setProperty("quiet", True)
-        help_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        help_btn.clicked.connect(self.help_dialog)
-        tv.addWidget(help_btn)
+        links = QHBoxLayout()
+        for text, slot, tip in (("Search  Ctrl+K", lambda: self.do("command_palette"), "Find a view, an action or a frame by typing"),
+                                ("Help  F1", self.help_dialog, "Keys and mouse for each mode")):
+            b = QToolButton()
+            b.setText(text)
+            b.setToolTip(tip)
+            b.setProperty("quiet", True)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.clicked.connect(slot)
+            links.addWidget(b)
+        tv.addLayout(links)
         dock = QDockWidget("Actions and settings", self)
         dock.setObjectName("tools")
         dock.setTitleBarWidget(QWidget())
@@ -397,9 +427,9 @@ class MainWindow(QMainWindow):
 
     def refresh_action_texts(self) -> None:
         for action, b in self.action_buttons.items():
-            key = self.keymap.first(action).replace("Ctrl+", "^").replace("Shift+", "⇧")
+            key = self.keymap.first(self.KEY_OF.get(action, action)).replace("Ctrl+", "^").replace("Shift+", "⇧")
             b.setText(f"{self.ACTION_TITLES[action]}   {key}" if key else self.ACTION_TITLES[action])
-            b.setToolTip(ACTION_INFO[action][1] if action in ACTION_INFO else "")
+            b.setToolTip(ACTION_INFO[self.KEY_OF.get(action, action)][1] if self.KEY_OF.get(action, action) in ACTION_INFO else "")
 
     def apply_panels(self) -> None:
         """Side panels on / off (Ctrl+B); the box list only exists for the editor."""
@@ -434,14 +464,17 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self.progress)
         sb.addPermanentWidget(self.cancel_btn)
 
-    def toast(self, text: str) -> None:
-        """Say what an action just did, over the work area (the status bar line is easy to miss)."""
-        self.central.toast.show_message(text)
+    def toast(self, text: str, action: tuple | None = None) -> None:
+        """Say what an action just did, over the work area (the status bar line is easy to miss). `action` is a
+        (button text, callable) such as ('Undo', self.undo_page)."""
+        self.central.toast.show_message(text, action=action)
 
     def act(self, menu, text: str, slot, action: str | None = None, checkable: bool = False, shortcut: str | None = None):
         a = QAction(text, self)
         a.triggered.connect(slot)
         a.setCheckable(checkable)
+        if action:
+            a.setData(action)  # key-driven: the command palette lists it from the key map, not from the menu
         keys = self.keymap.map.get(action, []) if action else []
         if shortcut:
             a.setShortcut(QKeySequence(shortcut))
@@ -468,8 +501,10 @@ class MainWindow(QMainWindow):
         self.act(m, "Save and next", lambda: self.do("accept_next"), "accept_next")
         self.act(m, "Empty frame and next", lambda: self.do("empty_next"), "empty_next")
         self.act(m, "Skip frame and next", lambda: self.do("skip_next"), "skip_next")
+        self.act(m, "Mark frame as checked (hides it from Review)", lambda: self.do("mark_checked"), "mark_checked")
         m.addSeparator()
-        self.act(m, "Undo", lambda: self.do("undo"), "undo")
+        self.act(m, "Undo (boxes, or the last saved grid page)", lambda: self.do("undo"), "undo")
+        self.act(m, "Undo the last saved grid page", self.undo_page)
         self.act(m, "Redo", lambda: self.do("redo"), "redo")
         self.act(m, "Delete selected box", lambda: self.do("delete_box"), "delete_box")
         self.act(m, "Toggle class of box", lambda: self.do("toggle_class"), "toggle_class")
@@ -483,8 +518,14 @@ class MainWindow(QMainWindow):
         self.act(m, "Fit all boxes on this frame with SAM", lambda: self.do("sam_fit_all"))
 
         m = mb.addMenu("&View")
+        self.act(m, "Search views, actions and frames...", lambda: self.do("command_palette"), "command_palette")
+        m.addSeparator()
+        self.act(m, "Go to Triage", lambda: self.do("go_triage"), "go_triage")
+        self.act(m, "Go to Label", lambda: self.do("go_label"), "go_label")
+        self.act(m, "Go to Review", lambda: self.do("go_review"), "go_review")
+        self.act(m, "Next stage that has frames", lambda: self.do("grid_view"), "grid_view")
+        m.addSeparator()
         self.act(m, "Switch grid / editor", lambda: self.do("switch_mode"), "switch_mode")
-        self.act(m, "Next view in the list", lambda: self.do("grid_view"), "grid_view")
         self.act(m, "Fit image", lambda: self.do("fit_view"), "fit_view")
         self.act(m, "Show / hide boxes", lambda: self.do("toggle_boxes"), "toggle_boxes")
         self.act(m, "Loupe", lambda: self.do("toggle_loupe"), "toggle_loupe")
@@ -535,10 +576,10 @@ class MainWindow(QMainWindow):
         k = self.keymap.first
         if self.mode == "grid":
             if self.grid.sticky:
-                return (f"click: has objects  |  Ctrl+click: skip  |  wheel: zoom  |  {k('commit_page')}: commit + next  |  "
-                        f"{k('switch_mode')}: editor")
-            return (f"click: has objects  |  Ctrl+click: skip  |  hold RMB: peek  |  {k('commit_page')}: commit page  |  "
-                    f"{k('switch_mode')}: editor")
+                return (f"click: has objects  |  Ctrl+click: skip  |  double-click: editor  |  wheel: zoom  |  "
+                        f"{k('commit_page')}: save + next  |  {k('switch_mode')}: editor")
+            return (f"click: has objects  |  Ctrl+click: skip  |  double-click: editor  |  {k('commit_page')}: save page  |  "
+                    f"{k('undo')}: undo page  |  {k('switch_mode')}: editor")
         return (f"drag: new box  |  RMB: delete  |  wheel: zoom  |  {k('accept_next')}: save + next  |  {k('empty_next')}: empty  |  "
                 f"{k('skip_next')}: skip  |  {k('switch_mode')}: grid")
 
@@ -608,9 +649,11 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"framelabel - {proj.name}")
         self.canvas.set_classes(proj.class_names, [c.color for c in proj.classes])
         self.grid.class_colors = [QColor(c.color) for c in proj.classes]
+        self.grid.class_names = list(proj.class_names)
         self.grid.ui_threshold = proj.ui_threshold
         self.fill_classes()
-        self.view_tree.set_views(all_views(proj.class_names), set(json.loads(self.settings.value("tree_collapsed", "[]") or "[]")))
+        self.view_tree.set_views(all_views(proj.class_names), [c.color for c in proj.classes])
+        self.refresh_tree()
         QTimer.singleShot(0, self.fit_view_tree)
         # The shown confidence decides which frames the grid ("model found nothing") and the editor list get, so it must
         # not change between runs: the value you chose is remembered per project; the project's show_conf (the
@@ -693,6 +736,12 @@ class MainWindow(QMainWindow):
         self.counts_by_view = {}
         self.view_tree.set_counts({})
         self.counts_timer.stop()
+        if self.counts_job is not None:
+            self.counts_job.cancel()
+            self.counts_job = None  # its result no longer matches self.counts_job and is dropped
+        self.pace.reset()
+        self.undo_pages.clear()
+        self.pace_label.setVisible(False)
         self.load_progress.setRange(0, 0)
         self.load_progress.setVisible(True)
         project, conf = self.project, self.conf_spin.value()
@@ -726,14 +775,13 @@ class MainWindow(QMainWindow):
         self.grid.message = ""
         if not ws.session.auto_dir.exists():
             self.status_label.setText("No model proposals yet: Auto-label > Prelabel to get them. All frames go to the grid.")
-        triage = ws.queue("triage", hide_reviewed=True)
-        if triage:
-            self.set_mode("grid", queue="triage")
-        elif ws.queue("edit", hide_reviewed=True):
-            self.set_mode("edit", queue="edit")
-        else:  # nothing left to decide: show the frames themselves instead of an empty to-do view
-            self.set_mode("edit", queue="all")
+        # start where the work is: Triage, else Label, else Review, else the library (nothing is left to decide)
+        start = next((k for k in ("triage", "edit", "review") if ws.view(k, self.sort_key)), None)
+        if start is None:
+            self.set_mode(self.mode_of("all"), queue="all")
             self.toast("Every frame of this session has a decision")
+        else:
+            self.set_mode(self.mode_of(start), queue=start)
         self.refresh_counts()
         if self.setting_bool("perf/sam_preload", False) and self.ensure_sam(quiet=True):
             self.sam_worker.preload()
@@ -751,124 +799,6 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.status_label.setText(self.canvas.message)
 
-    # ================================================================ modes and views
-    def view_def(self, key: str | None = None):
-        return find_view(key or self.view_key, self.project.class_names if self.project else [])
-
-    def set_mode(self, mode: str, queue: str | None = None) -> None:
-        """Show a view in grid or editor mode. Without `queue` the current view stays and only the way of showing it
-        changes; with it, that view is shown."""
-        self.commit_current()
-        if queue is None and self.view_key not in self.view_tree.items:
-            queue = "triage" if mode == "grid" else "edit"
-        if queue is not None:
-            self.view_key = queue
-        self.mode = mode
-        self.settings.setValue(f"viewmode/{self.view_key.replace(':', '_')}", mode)
-        self.view_tree.select(self.view_key)
-        self.mode_switch.set_mode(mode)
-        self.stack.setCurrentWidget(self.grid if mode == "grid" else self.canvas)
-        self.action_pages.setCurrentIndex(0 if mode == "grid" else 1)
-        self.context_bar.show_tiles(mode == "grid")
-        self.apply_panels()
-        if mode == "grid":
-            self.box_table.setRowCount(0)
-            self.cur_path = None
-        self.apply_queue()
-
-    def switch_mode(self) -> None:
-        if self.ws is None:
-            return
-        self.set_mode("edit" if self.mode == "grid" else "grid")
-
-    def on_mode_chosen(self, mode: str) -> None:
-        if self.ws is not None and mode != self.mode:
-            self.set_mode(mode)
-        else:
-            self.mode_switch.set_mode(self.mode)
-
-    def on_view_chosen(self, key: str) -> None:
-        """A click in the view list: show that view the way you last looked at it (else the way it suits best)."""
-        if self.ws is None:
-            return
-        remembered = self.settings.value(f"viewmode/{key.replace(':', '_')}", "")
-        mode = remembered if remembered in ("grid", "edit") else self.view_def(key).mode
-        self.set_mode(mode, queue=key)
-
-    def next_view(self) -> None:
-        """The next view of the list that has frames (a plain step through the list when all are empty)."""
-        keys = self.view_tree.keys()
-        if not keys:
-            return
-        i = keys.index(self.view_key) if self.view_key in keys else -1
-        for step in range(1, len(keys) + 1):
-            key = keys[(i + step) % len(keys)]
-            if self.counts_by_view.get(key, 1):
-                self.on_view_chosen(key)
-                return
-
-    def apply_queue(self, keep_stem: str | None = None) -> None:
-        """Rebuild the current view and show it; with keep_stem stay on that frame (or its grid page) if it is
-        still in the view."""
-        if self.ws is None:
-            return
-        self.commit_current()
-        name = self.view_key
-        self.queue = self.ws.queue(name, hide_reviewed=True)
-        with timed("fill_frame_list", 20):
-            self.fill_frame_list()
-        pos = next((i for i, f in enumerate(self.queue) if f.stem == keep_stem), None) if keep_stem else None
-        if pos is None and keep_stem and self.mode == "edit" and keep_stem in self.ws.by_stem:
-            # the frame you are on stays (in time order) even when the new filter would not list it
-            at = self.ws.by_stem[keep_stem]
-            pos = sum(1 for f in self.queue if self.ws.by_stem.get(f.stem, 0) < at)
-            self.queue.insert(pos, self.ws.index[at])
-            self.fill_frame_list()
-        label = self.view_def().label
-        empty = f"Nothing in \"{label}\"." + (" Every frame here has a decision." if self.view_def().group in ("todo", "check") else "")
-        self.grid.message = empty
-        if self.mode == "grid":
-            if pos is not None:
-                page = pos // self.grid.per_page
-            else:
-                page = next((i for i, f in enumerate(self.queue) if f.status is None), 0) // self.grid.per_page                     if name == "triage" else 0
-            marks = dict(self.grid.marks) if keep_stem else {}
-            self.grid.show_ignored = name == "zone"
-            self.grid.set_items(self.queue, page, initial_mark=lambda fi, v=name: self.ws.initial_mark(fi, v))
-            if marks:  # marks not committed yet survive the rebuild
-                on_page = {f.stem for f in self.grid.page_items()}
-                self.grid.marks.update({k: m for k, m in marks.items() if k in on_page})
-                self.grid.update()
-            self.grid.setFocus()
-        else:
-            if not self.queue:
-                self.cur_path = None
-                self.canvas.img = None
-                self.canvas.message = empty
-                self.canvas.update()
-                self.update_status()
-                return
-            if pos is None:
-                pos = self.resume_position(name)
-            first = pos if pos is not None else next((i for i, f in enumerate(self.queue) if f.status in (None, "todo")), 0)
-            self.load_frame(first)
-            self.canvas.setFocus()
-        self.update_status()
-
-    def position_key(self, queue_name: str) -> str:
-        root = str(self.ws.session.root).lower().encode()
-        return f"pos/{hashlib.sha1(root).hexdigest()[:12]}/{queue_name.replace(':', '_')}"
-
-    def remember_position(self, stem: str) -> None:
-        if self.ws is not None:
-            self.settings.setValue(self.position_key(self.view_key), stem)
-
-    def resume_position(self, queue_name: str) -> int | None:
-        """Where the user stopped in this queue, if that frame is still waiting for a decision."""
-        stem = self.settings.value(self.position_key(queue_name), "")
-        i = next((k for k, f in enumerate(self.queue) if f.stem == stem), None) if stem else None
-        return i if i is not None and self.queue[i].status in (None, "todo") else None
-
     def goto_frame(self) -> None:
         """Jump to a frame of the current queue by 1-based number or by (the start of) its name."""
         if self.ws is None or not self.queue:
@@ -884,6 +814,10 @@ class MainWindow(QMainWindow):
         if not 0 <= i < len(self.queue):
             self.status_label.setText(f"No frame '{text}' in this queue.")
             return
+        self.jump_to(i)
+
+    def jump_to(self, i: int) -> None:
+        """Show the i-th frame of the current queue (its page in the grid)."""
         if self.mode == "grid":
             self.grid.set_page(i // self.grid.per_page)
             self.select_frame_row(i)
@@ -982,7 +916,7 @@ class MainWindow(QMainWindow):
         self.cur_path = fi.path
         self.remember_position(fi.stem)
         self.canvas.message = ""
-        self.canvas.set_frame(img, boxes, weak, keep_view=True, qimg=qimg)
+        self.canvas.set_frame(img, boxes, weak, keep_view=True, qimg=qimg, ghosts=self.ws.ghosts(fi.path, w, h))
         if carried is not None and not boxes and fi.status in (None, "todo"):
             self.canvas.replace_boxes(carried)
             self.canvas.message = "boxes carried over from the previous frame: check them"
@@ -996,8 +930,11 @@ class MainWindow(QMainWindow):
             return
         if not (self.canvas.dirty or force or status):
             return
+        was = self.ws.review.get(self.cur_path.stem)
         with timed("commit_current", 50):
-            self.ws.save(self.cur_path, self.canvas.boxes, self.canvas.iw, self.canvas.ih, status)
+            now = self.ws.save(self.cur_path, self.canvas.boxes, self.canvas.iw, self.canvas.ih, status)
+        if was in (None, "todo") and now in ("pos", "neg", "skip"):
+            self.record_decisions(1)  # a frame that waited for a decision has one now
         self.canvas.dirty = False
         self.schedule_counts()
         if 0 <= self.idx < len(self.queue) and self.queue[self.idx].path == self.cur_path:
@@ -1011,7 +948,7 @@ class MainWindow(QMainWindow):
         self.commit_current()
         if idx >= len(self.queue):
             self.status_label.setText("End of this queue.")
-            self.toast(f"End of \"{self.view_def().label}\": pick the next view on the left (or press {self.keymap.first('grid_view')})")
+            self.say_end_of_view()
             idx = len(self.queue) - 1
         carried = None
         if carry and self.carry_check.isChecked() and prev_img is not None and prev_boxes and 0 <= idx < len(self.queue):
@@ -1113,8 +1050,26 @@ class MainWindow(QMainWindow):
 
     STATUS_WORDS = {"pos": "labeled", "neg": "empty", "skip": "skipped", "todo": "marked", None: "new"}
 
+    def grid_stats(self) -> str:
+        """What saving the grid page would do, as coloured chips for the context bar: tiles ticked 'has objects', SKIP,
+        and the empty ones. In the Triage stage always; elsewhere only the changes that are pending."""
+        g = self.grid
+        items = g.page_items()
+        n_obj = sum(1 for fi in items if g.pending(fi) == "people")
+        n_skip = sum(1 for fi in items if g.pending(fi) == "skip")
+        n_empty = sum(1 for fi in items if g.pending(fi) == "empty" or (fi.status is None and g.marks.get(fi.stem) is None))
+        triage = self.current_stage() == "triage"
+        parts = []
+        if n_obj or triage:
+            parts.append(f"<span style='color:{T['accent_hi']}'><b>{n_obj}</b> has objects</span>")
+        if n_skip or triage:
+            parts.append(f"<span style='color:{T['text2']}'><b>{n_skip}</b> skip</span>")
+        if n_empty and (triage or n_obj or n_skip):
+            parts.append(f"<span style='color:{T['text']}'><b>{n_empty}</b> empty</span>")
+        return "&nbsp;&nbsp;&nbsp;".join(parts)
+
     def update_status(self) -> None:
-        """Everything that says where you are: the context bar, the page / frame panel, the progress, the status bar."""
+        """Everything that says where you are: the context bar, the hint card, the progress, the status bar."""
         if self.ws is None:
             if self.project is not None and not self.sessions:
                 self.context_bar.set_text("No frames", "", "The project's sources contain no frames.")
@@ -1125,68 +1080,48 @@ class MainWindow(QMainWindow):
         decided = c["labeled"] + c["empty"] + c["skipped"]
         self.done_bar.setRange(0, max(n, 1))
         self.done_bar.setValue(decided)
-        dots = (("new", "new", "text"), ("marked", "marked", "warn"), ("labeled", "labeled", "ok"), ("empty", "empty", "neutral"),
-                ("skipped", "skip", "skip"))
-        self.counts_label.setText(f"<b>{decided}</b> of {n} decided ({100 * decided // max(n, 1)}%)<br>"
-                                  + "&nbsp;&nbsp;".join(f"<span style='color:{T[col]}'>&#9679;</span> {c[k]} {word}"
-                                                        for k, word, col in dots if c[k]))
+        self.counts_label.setText(f"<b>{decided}</b> of {n} decided ({100 * decided // max(n, 1)}%)")
+        pace = self.pace_text()
+        self.pace_label.setText(pace)
+        self.pace_label.setVisible(bool(pace))
         vd = self.view_def()
+        where_name = self.view_name(vd.key)
         stats = ""
         if self.mode == "grid":
             g = self.grid
-            n_marked = sum(1 for m in g.marks.values() if m == "people")
-            n_skip = sum(1 for m in g.marks.values() if m == "skip")
-            n_tiles = len(g.page_items())
+            n_marked = sum(1 for fi in g.page_items() if g.pending(fi) == "people")
+            n_skip = sum(1 for fi in g.page_items() if g.pending(fi) == "skip")
             thr = self.project.ui_threshold
             n_sugg = sum(1 for fi in g.page_items() if g.marks.get(fi.stem) == "skip" and fi.status is None and fi.ui < thr)
             sugg = f" ({n_sugg} pre-marked as interface screens: click to undo)" if n_sugg else ""
             where = (f"Grid  |  photo {g.page + 1} of {len(self.queue)}" if g.sticky else
                      f"Grid  |  page {g.page + 1} of {g.n_pages}  |  {len(self.queue)} frames")
-            self.status_label.setText(f"GRID  {vd.label} (shown conf {self.conf_spin.value():.2f}): "
-                                      f"{len(self.queue)} frames, page {g.page + 1}/{g.n_pages}  |  marked {n_marked}, "
-                                      f"skip {n_skip}{sugg}")
-            stats = (f"<span style='color:{T['accent_hi']}'><b>{n_marked}</b> has objects</span>&nbsp;&nbsp;"
-                     f"<span style='color:{T['text2']}'><b>{n_skip}</b> skip</span>&nbsp;&nbsp;"
-                     f"<span style='color:{T['text']}'><b>{max(n_tiles - n_marked - n_skip, 0)}</b> empty</span>")
+            self.status_label.setText(f"GRID  {where_name} (shown conf {self.conf_spin.value():.2f}): "
+                                      f"{len(self.queue)} frames, page {g.page + 1}/{g.n_pages}  |  to change: "
+                                      f"{n_marked} has objects, {n_skip} skip{sugg}")
+            stats = self.grid_stats()
         elif self.queue and self.cur_path is not None:
             fi = self.queue[self.idx]
             st = self.STATUS_WORDS.get(fi.status, "new")
+            if fi.status in ("pos", "neg") and fi.stem in ws.checked:
+                st += ", checked"
             ui = "  UI? (X to skip)" if fi.ui < self.project.ui_threshold else ""
+            more = f"  model sees {len(self.canvas.ghosts)} more (amber)" if self.canvas.ghosts else ""
             cls = self.project.class_names[self.canvas.cls]
             where = f"Editor  |  frame {self.idx + 1} of {len(self.queue)}  |  {fi.stem}  |  {st}{' (unsaved edits)' if self.canvas.dirty else ''}"
             self.status_label.setText(f"EDIT {self.idx + 1}/{len(self.queue)}  {fi.stem}  [{fi.status or 'new'}{'*' if self.canvas.dirty else ''}]"
-                                      f"{ui}  class {self.canvas.cls + 1}={cls}  boxes {len(self.canvas.boxes)}  "
+                                      f"{ui}  class {self.canvas.cls + 1}={cls}  boxes {len(self.canvas.boxes)}{more}  "
                                       f"zoom {self.canvas.view.zoom:.1f}x")
         else:
             where = "Editor  |  no frames"
-        self.context_bar.set_text(vd.label, where, vd.hint, stats if self.mode == "grid" else "")
+        self.setWindowTitle(f"framelabel - {self.project.name} - {where_name}")
+        title = BY_KEY[vd.stage].label if vd.stage else vd.label
+        self.context_bar.set_text(title, where, vd.hint, stats, vd.label if vd.parent else "")
         self.keys_label.setText(self.mode_hint())
-
-    # ---- the counts next to the views
-    def schedule_counts(self) -> None:
-        if self.ws is not None and not self.closing:
-            self.counts_timer.start()
-
-    def refresh_counts(self) -> None:
-        """Count the frames of every view in a thread (the 'disagree' view is slow on very large sessions)."""
-        if self.ws is None or self.closing:
-            return
-        if self.counts_job is not None:
-            self.counts_job.cancel()
-        index, names = list(self.ws.index), list(self.project.class_names)
-        conf, thr = self.ws.conf, self.project.ui_threshold
-        job = Job(lambda progress, cancelled: view_counts(index, names, conf, thr))
-        self.counts_job = job
-        job.finished.connect(self.on_counts)
-        start_job(self, job)
-
-    @pyqtSlot(object)
-    def on_counts(self, counts) -> None:
-        if self.sender() is not self.counts_job:
-            return  # a newer count is on its way
-        self.counts_job = None
-        self.counts_by_view = counts
-        self.view_tree.set_counts(counts)
+        card = self.coach_text()
+        if card != getattr(self, "coach_shown", None):
+            self.coach_shown = card
+            self.coach.show_hint(*card)
 
     # ================================================================ keys
     def eventFilter(self, obj: QObject, e: QEvent) -> bool:
@@ -1229,11 +1164,11 @@ class MainWindow(QMainWindow):
                 self.grid.close_preview()
             return True
         grid_actions = ("commit_page", "prev_page", "next_page", "grid_view", "switch_mode", "fullscreen", "reload", "goto_frame",
-                        "toggle_panels")
+                        "toggle_panels", "go_triage", "go_label", "go_review", "command_palette", "open_frame", "undo")
         for action in self.keymap.actions_for(name):
             if self.mode == "grid" and action not in grid_actions:
                 continue
-            if self.mode == "edit" and action in ("commit_page", "prev_page", "next_page"):
+            if self.mode == "edit" and action in ("commit_page", "prev_page", "next_page", "open_frame"):
                 continue
             self.do(action)
             return True
@@ -1256,6 +1191,10 @@ class MainWindow(QMainWindow):
             self.apply_panels()
         elif action == "goto_frame":
             self.goto_frame()
+        elif action in STAGE_BY_ACTION:
+            self.on_view_chosen(STAGE_BY_ACTION[action])
+        elif action == "command_palette":
+            self.command_palette()
         elif self.mode == "grid":
             self.grid_action(action)
         elif not self.queue or self.cur_path is None:
@@ -1263,17 +1202,24 @@ class MainWindow(QMainWindow):
         elif action == "accept_next":
             n = len(c.boxes)
             self.commit_current(force=True)
-            self.toast(f"Saved: {n} box{'es' if n != 1 else ''}" if n else "Saved as empty (no boxes)")
-            self.go(self.idx + 1, carry=True)
+            checked = self.check_in_review()
+            self.finish_frame((f"Saved: {n} box{'es' if n != 1 else ''}" if n else "Saved as empty (no boxes)")
+                              + (", checked" if checked else ""), carry=True)
         elif action == "empty_next":
             c.boxes = []
             self.commit_current(status="neg")
-            self.toast("Saved as empty")
-            self.go(self.idx + 1)
+            checked = self.check_in_review()
+            self.finish_frame("Saved as empty" + (", checked" if checked else ""))
         elif action == "skip_next":
             self.commit_current(status="skip")
-            self.toast("Skipped (not exported)")
-            self.go(self.idx + 1)
+            self.finish_frame("Skipped (not exported)")
+        elif action == "mark_checked":
+            self.commit_current()  # edits are saved first: a save takes the check away
+            if self.ws.review.get(self.cur_path.stem) in ("pos", "neg"):
+                self.check_in_review(force=True)
+                self.finish_frame("Checked: it is hidden from Review now")
+            else:
+                self.toast("Only saved frames can be checked")
         elif action == "prev":
             self.go(self.idx - 1)
         elif action == "next":
@@ -1322,34 +1268,154 @@ class MainWindow(QMainWindow):
             self.commit_current(force=True)
         self.update_status()
 
+    def finish_frame(self, said: str, carry: bool = False) -> None:
+        """Say what was done to this frame and go on to the next one. At the end of the view the message leads the
+        end-of-view one, so a confirmation is never lost."""
+        self.lead = said
+        self.go(self.idx + 1, carry=carry)
+        if self.lead is not None:
+            self.toast(said)
+            self.lead = None
+
+    def check_in_review(self, force: bool = False) -> bool:
+        """In the Review stage a frame you saved (or marked) is checked: it leaves Review. True when it was checked."""
+        if self.ws is None or self.cur_path is None or (self.current_stage() != "review" and not force):
+            return False
+        stem = self.cur_path.stem
+        if self.ws.review.get(stem) not in ("pos", "neg"):
+            return False
+        self.ws.check([stem])
+        self.schedule_counts()
+        return True
+
     def grid_action(self, action: str) -> None:
         g = self.grid
         if action == "commit_page":
-            n_obj = sum(1 for m in g.marks.values() if m == "people")
-            n_skip = sum(1 for m in g.marks.values() if m == "skip")
-            n_empty = max(len(g.page_items()) - n_obj - n_skip, 0)
-            self.ws.commit_page(g.stems_on_page(), g.marks)
-            self.schedule_counts()
-            for i in range(g.page * g.per_page, min((g.page + 1) * g.per_page, len(self.queue))):
-                self.queue[i] = self.ws.index[self.ws.by_stem[self.queue[i].stem]]
-                self.update_list_item(i)
-            self.toast(f"Page saved: {n_empty} empty, {n_obj} to the editor, {n_skip} skipped")
-            if g.page + 1 >= g.n_pages:
-                if self.view_key == "triage":
-                    self.status_label.setText("Grid finished: switching to the editor.")
-                    self.set_mode("edit", queue="edit")
-                    self.toast(f"Page saved ({n_empty} empty, {n_obj} to the editor, {n_skip} skipped). Triage is done: "
-                               "now label the frames with objects")
-                    return
-                self.status_label.setText("End of this view.")
-                g.set_page(g.page)
-            else:
-                g.set_page(g.page + 1)
-        elif action == "prev_page":
+            self.commit_grid_page()
+            return
+        if action in ("undo", "undo_page"):
+            self.undo_page()
+            return
+        if action == "open_frame":
+            self.open_in_editor(g.hovered_stem())
+            return
+        if action == "prev_page":
             g.set_page(g.page - 1)
         elif action == "next_page":
             g.set_page(g.page + 1)
         self.select_frame_row(min(g.page * g.per_page, max(0, len(self.queue) - 1)))
+
+    def commit_grid_page(self) -> None:
+        """Save the page: ticked tiles go to Label, SKIP tiles are skipped, the unmarked ones become empty. In Review the
+        page is also marked as checked. A toast with Undo says what happened."""
+        g = self.grid
+        items = g.page_items()
+        n_obj = sum(1 for fi in items if g.pending(fi) == "people")
+        n_skip = sum(1 for fi in items if g.pending(fi) == "skip")
+        stems, marks = g.stems_on_page(), dict(g.marks)
+        undo = self.ws.commit_page(stems, g.marks)
+        n_empty = sum(1 for _stem, (_old, _t, new) in undo.items() if new == "neg")
+        review = self.current_stage() == "review"
+        newly = [x for x in stems if x not in self.ws.checked] if review else []
+        if review:
+            self.ws.check(stems)
+        pushed = bool(undo or newly)
+        if pushed:
+            self.undo_pages.append({"view": self.view_key, "stem": items[0].stem if items else None, "undo": undo,
+                                    "marks": marks, "checked": newly})
+            del self.undo_pages[:-20]
+        if undo:
+            self.record_decisions(len(undo))
+        self.schedule_counts()
+        for i in range(g.page * g.per_page, min((g.page + 1) * g.per_page, len(self.queue))):
+            self.queue[i] = self.ws.index[self.ws.by_stem[self.queue[i].stem]]
+            self.update_list_item(i)
+        if not pushed:
+            text = "Nothing to change on this page"
+        elif review:
+            text = f"Page checked ({len(undo)} changed)" if undo else "Page checked"
+        else:
+            text = f"Page saved: {n_empty} empty, {n_obj} to Label, {n_skip} skipped"
+        action = ("Undo", self.undo_page) if pushed else None
+        if g.page + 1 >= g.n_pages:
+            if self.after_triage_page(action):
+                return
+            self.status_label.setText("End of this view.")
+            self.toast(text, action)
+            g.set_page(g.page)
+        else:
+            self.toast(text, action)
+            g.set_page(g.page + 1)
+        self.select_frame_row(min(g.page * g.per_page, max(0, len(self.queue) - 1)))
+
+    def undo_page(self) -> None:
+        """Take back the last saved grid page: statuses and label files as they were, the page shown again with its marks."""
+        if self.ws is None or not self.undo_pages:
+            self.toast("Nothing to undo")
+            return
+        entry = self.undo_pages.pop()
+        self.commit_current()
+        restored, left = self.ws.undo_page(entry["undo"])
+        self.ws.uncheck(entry["checked"])
+        self.schedule_counts()
+        view = entry["view"] if entry["view"] in self.view_tree.items else "triage"
+        self.set_mode("grid", queue=view, keep_stem=entry["stem"])
+        on_page = {fi.stem for fi in self.grid.page_items()}
+        self.grid.marks.clear()
+        self.grid.marks.update({k: m for k, m in entry["marks"].items() if k in on_page and k not in left})
+        self.grid.update()
+        self.update_status()
+        n = len(restored) + len(entry["checked"])
+        text = f"Page restored ({n} frame{'s' if n != 1 else ''})"
+        if left:
+            text += f"; {len(left)} decided again since, left as they are"
+        self.toast(text)
+
+    # ================================================================ the command palette
+    def palette_entries(self) -> list[Entry]:
+        """Everything that can be run without typing a frame: the views, the key-driven actions that fit the current mode,
+        and the menu items that have no key."""
+        entries: list[Entry] = []
+        for v in all_views(self.project.class_names):
+            n = self.counts_by_view.get(v.key)
+            key = self.keymap.first(STAGE_KEYS[v.key]) if v.is_stage else ""
+            entries.append(Entry(f"Go to {self.view_name(v.key)}", "" if n is None else f"{n:,} frames".replace(",", " "), key,
+                                 lambda k=v.key: self.on_view_chosen(k), "view"))
+        group_of_mode = "Grid" if self.mode == "grid" else "Editor"
+        for action, (group, text) in ACTION_INFO.items():
+            if group in ("Everywhere", group_of_mode) and action not in STAGE_BY_ACTION and action != "command_palette":
+                entries.append(Entry(text, "", self.keymap.first(action), lambda a=action: self.do(a), "action"))
+        for menu in self.menuBar().findChildren(QMenu):
+            for a in menu.actions():
+                if a.isSeparator() or a.menu() is not None or a.data() is not None or not a.isEnabled():
+                    continue
+                title = a.text().split("\t")[0].replace("&", "")
+                if title and "Recent" not in title:
+                    entries.append(Entry(title.rstrip(".") if title.endswith("...") else title, "", a.shortcut().toString(),
+                                         a.trigger, "action"))
+        return entries
+
+    def palette_frames(self, query: str) -> list[Entry]:
+        """Frames of the current view that the typed text names: a number, or the start of a name."""
+        q = query.strip()
+        out: list[Entry] = []
+        if not self.queue or not q:
+            return out
+        if q.isdigit() and 1 <= int(q) <= len(self.queue):
+            i = int(q) - 1
+            out.append(Entry(f"Go to frame {q}: {self.queue[i].stem}", "", "", lambda i=i: self.jump_to(i), "frame"))
+        for i, f in enumerate(self.queue):
+            if f.stem.startswith(q) and len(out) < 8:
+                out.append(Entry(f"Go to frame {f.stem}", self.STATUS_WORDS.get(f.status, "new"), "",
+                                 lambda i=i: self.jump_to(i), "frame"))
+        return out
+
+    def command_palette(self) -> None:
+        if self.project is None or self.ws is None:
+            return
+        dlg = CommandPalette(self.palette_entries(), self.palette_frames, self)
+        if dlg.exec() and dlg.chosen is not None and dlg.chosen.run is not None:
+            QTimer.singleShot(0, dlg.chosen.run)  # after the palette is gone, so focus returns to the work area
 
     def from_previous(self, track: bool) -> None:
         """Boxes of the previous frame in time order (not the queue): copied, or tracked onto this frame."""
@@ -1609,7 +1675,7 @@ class MainWindow(QMainWindow):
         sections = [("What the recorder dropped before saving (capture.json)", capture_rows(ws.capture)),
                     ("Model proposals", prelabel_rows(ws.session)),
                     ("Frames and where to find them", frame_rows(ws.index, ws.conf, self.project.ui_threshold,
-                                                                 self.project.class_names))]
+                                                                 self.project.class_names, ws.checked))]
         dlg = ReportDialog(f"Session report: {ws.session.name}", sections, self)
         dlg.open_view.connect(self.open_view)
         dlg.exec()
@@ -1655,12 +1721,15 @@ class MainWindow(QMainWindow):
                 proc.kill()
                 proc.waitForFinished(5000)
         self.closing = True
+        self.counts_timer.stop()
+        self.conf_timer.stop()
         self.commit_current()
         self.cancel_loader()
         self.reloader = self.overview_job = None
         stop_jobs(self)
         self.shutdown_sam()
         self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("dock_state", self.saveState())
         self.pool.shutdown(wait=False, cancel_futures=True)
         self.grid.shutdown()
         self.settings.sync()

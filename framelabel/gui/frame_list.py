@@ -11,7 +11,7 @@ STATUS_COLORS = {"pos": "#4ade80", "neg": "#8b93a1", "skip": "#e0a458", "todo": 
 
 
 def frame_label(fi: FrameInfo) -> str:
-    tag = {"pos": "labeled", "neg": "empty", "skip": "skip", "todo": "queued"}.get(fi.status or "", "new")
+    tag = {"pos": "labeled", "neg": "empty", "skip": "skipped", "todo": "marked"}.get(fi.status or "", "new")
     extra = f"  {fi.max_conf:.2f}" if fi.max_conf else ""
     return f"{fi.stem}  [{tag}]{extra}"
 
@@ -22,6 +22,7 @@ class FrameListModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.queue: list[FrameInfo] = []
+        self.notes: dict[str, str] = {}   # stem -> a short note shown after the name (what Review found)
         self.colors = {k: QColor(v) for k, v in STATUS_COLORS.items()}
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
@@ -32,7 +33,8 @@ class FrameListModel(QAbstractListModel):
             return None
         fi = self.queue[index.row()]
         if role == Qt.ItemDataRole.DisplayRole:
-            return frame_label(fi)
+            note = self.notes.get(fi.stem)
+            return frame_label(fi) + (f"  {note}" if note else "")
         if role == Qt.ItemDataRole.ForegroundRole:
             return self.colors.get(fi.status, self.colors[None])
         return None

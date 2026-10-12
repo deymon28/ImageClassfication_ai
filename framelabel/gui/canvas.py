@@ -58,6 +58,7 @@ class Canvas(QWidget):
         self.view = View(1, 1)
         self.boxes: list[Box] = []
         self.weak: list[Box] = []             # proposals below the shown confidence (faint)
+        self.ghosts: list[Box] = []           # proposals a decided frame's labels do not cover (dashed amber, click to add)
         self.history = History()
         self.dirty = False
         self.sel = -1
@@ -82,14 +83,14 @@ class Canvas(QWidget):
         self.update()
 
     def set_frame(self, img: np.ndarray, boxes: list[Box], weak: list[Box] | None = None, keep_view: bool = False,
-                  qimg: QImage | None = None) -> None:
+                  qimg: QImage | None = None, ghosts: list[Box] | None = None) -> None:
         # `img` is replaced, never modified in place: the SAM thread may still be reading the previous array
         same_size = self.img is not None and self.img.shape[:2] == img.shape[:2]
         self.img, self.qimg, self._small = img, qimg if qimg is not None else to_qimage(img), None
         if not (keep_view and same_size):
             self.view = View(img.shape[1], img.shape[0])
         self.view.fit(self.width(), self.height())
-        self.boxes, self.weak = boxes, weak or []
+        self.boxes, self.weak, self.ghosts = boxes, weak or [], ghosts or []
         self.history.clear()
         self.sel, self.hover, self.drag, self.dirty = -1, -1, None, False
         self.update()
@@ -240,6 +241,18 @@ class Canvas(QWidget):
         if self.drag and self.drag["kind"] == "new":
             boxes.append(self.drag["box"])
         if self.show_boxes:
+            for b in self.ghosts:  # what the model sees and the labels do not: dashed amber, a click adds it
+                r = self.wrect(b)
+                p.setPen(QPen(qc("warn"), 1.5, Qt.PenStyle.DashLine))
+                p.drawRect(r)
+                text = f"model {b.conf:.2f}" if b.conf is not None else "model"
+                tw, th = p.fontMetrics().horizontalAdvance(text) + 6, p.fontMetrics().height()
+                ty = r.top() - th if r.top() - th > 0 else r.bottom()
+                bg = qc("warn")
+                bg.setAlpha(190)
+                p.fillRect(QRectF(r.left(), ty, tw, th), bg)
+                p.setPen(QColor(0, 0, 0))
+                p.drawText(QRectF(r.left() + 3, ty, tw, th), Qt.AlignmentFlag.AlignVCenter, text)
             for i, b in enumerate(boxes):
                 r = self.wrect(b)
                 color = self.color(b.cls)
@@ -366,6 +379,10 @@ class Canvas(QWidget):
             self.snapshot()
             b = self.boxes[i].norm()
             self.drag = {"kind": "move", "start": (ix, iy, b.x1, b.y1, b.x2, b.y2), "moved": False, "was_dirty": was_dirty}
+            return
+        if (j := box_at(self.ghosts, ix, iy)) >= 0:  # add a proposal the labels do not cover
+            g = self.ghosts.pop(j)
+            self.add_box(Box(*g.xyxy(), g.cls, None))
             return
         if self.show_weak and (j := box_at(self.weak, ix, iy)) >= 0:  # accept a weak proposal
             w = self.weak.pop(j)

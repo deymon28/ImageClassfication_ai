@@ -69,14 +69,32 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
    check several for an ensemble (boxes merged with weighted box fusion), the inference size, and optional
    test-time augmentation (horizontal flip + a 1.3x larger scale, fused). Proposals from confidence 0.05 are stored,
    so the shown threshold can be changed later without re-running. GPU: refuses while the game runs, caps VRAM.
-2. **Grid triage** (view *To do > Triage: nothing found*): frames where the model found nothing come as a page
-   of tiles (weak proposals drawn dotted). Click = has objects, MMB / Ctrl+click = skip, hold the right button = peek at
-   the full-size photo (it closes when you let go; a quick click keeps it open, wheel zooms, drag pans), Space = commit
-   the page (unmarked frames become empty). With *Tiles* 1 x 1 the tile is the photo itself: wheel zoom and drag pan work
-   at once and Space commits it and shows the next. The **shown confidence** (right panel, with presets) decides which
-   frames are in "model found nothing" and which in the editor list; it is applied at once and remembered per project
-   (the project's `show_conf` is only the first default). *Tiles* (above the grid, or *View > Grid tiles per page*):
-   1 x 1, 2 x 1, 1 x 2, 2 x 2 ... 5 x 4.
+2. **The way through the work** (left panel; the design and its reasons: `docs/ui-design.md`). Three stages, each opening
+   the way that suits it, then the library:
+   * **1 Triage** (grid): the frames the model found nothing in come as a page of tiles. Click = has objects, MMB /
+     Ctrl+click = skip, hold the right button = peek at the full-size photo, Space = save the page (unmarked tiles become
+     empty, ticked ones go to Label). The toast has **Undo** (Ctrl+Z in the grid takes back the last saved pages; frames
+     decided again since stay as they are). With
+     *Tiles* 1 x 1 the tile is the photo itself (wheel zoom, drag pan, Space saves and shows the next). Lenses: *Weak
+     proposals*, *Only in ignore zone*, *Interface screens* (pre-marked SKIP).
+   * **2 Label** (editor): the frames with a proposal at the shown confidence, plus the ones you marked in Triage. Fix the
+     boxes, Space saves and goes on. The order is a sort in the top bar (time, unsure proposals first, small objects
+     first). Lenses: *From the model*, *Marked in Triage*.
+   * **3 Review** (grid): saved frames that deserve a second look: *Possibly missed* (the model is confident about a box
+     that was not drawn, or the frame is empty), *Possibly wrong* (a box with no matching proposal), *Small objects*.
+     Tiles and the editor show the labels in the class colours and the proposals they do not cover as dashed amber boxes
+     (in the editor a click adds one). Space saves the page as **checked** (K marks one frame in the editor); checked
+     frames leave Review.
+   * **Library**: all frames, new, labeled, empty, skipped, by class (grid; double-click a tile = open it in the editor,
+     Tab comes back to its page; labeled tiles are locked in the grid so a click cannot cost them their boxes).
+
+   Every stage row shows what is left (a green check when done, a bar for how far Triage and Label are), the icon of the
+   way it opens, and its key (Ctrl+1 / 2 / 3); V goes to the next stage that has frames. A frame is *new* (no
+   decision), *marked* ('has objects' ticked in Triage, boxes still to do), *labeled*, *empty* or *skipped*. The **shown
+   confidence** (right panel, with presets) decides which frames are in Triage and which in Label; it is applied at once
+   and remembered per project (the project's `show_conf` is only the first default). *Tiles* (top bar, or *View >
+   Grid tiles per page*): 1 x 1, 2 x 1, 1 x 2, 2 x 2 ... 5 x 4. *Ctrl+B* hides the side panels, **Ctrl+K** searches
+   views, actions and frames, F1 lists every key.
 3. **Editor**: proposals are dashed boxes with their confidence; drag on empty space = new box, drag a box = move,
    drag a corner or an edge = resize, RMB = delete, wheel = zoom at cursor, MMB drag = pan. Space = accept and next,
    E = empty, X = skip, A/D = previous/next, N = next unreviewed, Ctrl+Z / Ctrl+Y = undo/redo, R = back to the model's
@@ -87,16 +105,11 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
    "Carry boxes" does that automatically when moving to an unreviewed frame without proposals. F fits the selected
    box with SAM, Alt+click creates a box from a point with SAM, "Fit new boxes with SAM" refines every drawn box.
    SAM runs on a crop around the object, so far (small) people are fitted too.
-5. **Views** (left panel; how it is organised and why: `docs/ui-design.md`). The list is grouped by what you do
-   with the frames, each view with its count: **To do** (frames without a decision: triage, label, marked, unsure
-   proposals first, small/far objects first, all new), **Check** (interface screens, seen only in an ignore zone, weak
-   proposals only, *model disagrees with my labels*: confident proposals without a label, labels without a proposal),
-   **Done** (labeled, empty, skipped), **Browse** (all frames, by class). The **Grid | Editor** switch decides how the
-   highlighted view is shown; each view remembers its last mode. A frame is *new* (no decision), *marked* ('has objects'
-   ticked in the grid, boxes still to do), *labeled*, *empty* or *skipped*. The thin bar above the work area says
-   which view and where in it (the keys of the mode are in the status bar, F1 lists them all); actions confirm
-   themselves with a short message over the image (*Saved: 2 boxes*, *Page saved: ...*). *Ctrl+B* hides the side
-   panels for more room.
+5. **Where you are and what happened**: the thin bar above the work area says which stage (and lens) and where in it, in
+   the grid what saving the page will change; the hint card under the list says what the current view is for; the keys
+   of the mode are in the status bar; actions confirm themselves with a short message over the image (*Saved: 2 boxes*,
+   *Page saved: ...*), and at the end of a view the message has a button to the next stage. Under the progress bar the
+   pace appears once there is enough to measure ("42 per min, about 1 h 20 min left").
 6. **Export** (*File > Export*, `python -m framelabel export projects\abi.yaml`): all labeled frames plus a share of
    empty ones (half of them the model's hardest false positives); validation = random 2-minute time blocks of every
    session, chosen so every class's val share is close to the target (neighbouring frames are near-duplicates, so a
@@ -106,7 +119,8 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
 
 What counts as an object, how tight a box is, and when to mark a frame empty or skipped: `docs/labeling-guide.md`.
 
-The frame list on the left has a filter box (part of a name or of a tag such as `new`, `empty`); F5 re-reads
+The frame list on the left has a filter box (part of a name or of a tag such as `new`, `empty`, `marked`); in Review
+it also says what was found (`missed 1, small`). F5 re-reads
 proposals and new frames without leaving the current frame, Ctrl+G jumps to a frame by number or name, and the
 editor reopens where you stopped in each queue. *Edit > Fit all boxes on this frame with SAM* refines every box.
 
@@ -143,17 +157,17 @@ It reports AP50 and, per confidence, precision, recall, false positives per fram
 ## What is filtered out, and where to see it
 
 Frames can be hidden from the normal views in several places; *View > Session report* (or the *Report* button next to
-the session) counts every one of them and double-clicking a row opens the view that shows those frames. The *Check*
-group of the view list and the status bar carry the same numbers.
+the session) counts every one of them and double-clicking a row opens the view that shows those frames. The
+lenses of Triage and the status bar carry the same numbers.
 
 * **The recorder** (ImageHook, `ui_filter`) drops interface screens, duplicates and non-game frames *before* saving;
   its counts are read from the session's `capture.json`. These frames are not on disk and cannot be reviewed here
   (record with `ui_filter` off to keep them).
-* **Suspected interface screens** (framelabel's own detection, view *Check > Interface screens*): pre-marked SKIP; the status line says how
+* **Suspected interface screens** (framelabel's own detection, lens *Triage > Interface screens*): pre-marked SKIP; the status line says how
   many frames of the page are pre-marked, a click on a tile undoes the mark.
-* **Proposals hidden by ignore zones** (view *Check > Only in ignore zone*): the model detected something only inside an ignore zone
+* **Proposals hidden by ignore zones** (lens *Triage > Only in ignore zone*): the model detected something only inside an ignore zone
   (the HUD icon), so the frame looks empty; the hidden boxes are drawn in cyan.
-* **Weak proposals** (view *Check > Weak proposals only*): below the shown confidence; dotted boxes, `W` in the editor shows them.
+* **Weak proposals** (lens *Triage > Weak proposals*): below the shown confidence; dotted boxes, `W` in the editor shows them.
 * **Dropped classes**: model classes without a project class (`class_map`) are not written; a prelabel run records the
   counts (frames without any detection, frames only inside a zone, dropped classes) in `labels_auto/_meta.json` under
   `run` and shows them when it finishes.
@@ -188,9 +202,11 @@ the window is a separate process: *Cancel* stops it after the current batch, and
 
 * `framelabel/core` - pure logic: boxes and YOLO files, sessions and `review.json`, project files, queues and views,
   splitting and export, interface-screen detection, box tracking, undo history, view math, `index_cache.py`
-  (cached label rows, `Cancelled`), `report.py` (what is filtered out).
+  (cached label rows, `Cancelled`), `report.py` (what is filtered out), `views.py` (stages, lenses, counts),
+  `checked.py` (frames checked in Review), `pace.py`.
 * `framelabel/ml` - GPU parts: guard, model registry, prediction + WBF, SAM fitting, evaluation, training.
 * `framelabel/gui` - PyQt6 window, canvas, grid, dialogs, keymap; background work: `workers.py` (thread jobs),
-  `process_job.py` (child processes), `sam_worker.py`, `frame_list.py` (model/view), `panels.py` (view list, mode switch, context bar, toast), `watchdog.py`.
+  `process_job.py` (child processes), `sam_worker.py`, `frame_list.py` (model/view), `workflow.py` (stages, modes, counts), `panels.py` (workflow list, mode switch,
+  context bar, hint card, toast), `palette.py` (Ctrl+K), `theme.py`, `icons.py`, `watchdog.py`.
 * `framelabel/perf.py` - logging setup, timing helper, per-user app folder.
 * `tools/` - labeler data preparation, `profile_session.py`; `tests/` - pytest (GUI tests run headless).
