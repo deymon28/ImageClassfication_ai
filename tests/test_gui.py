@@ -1598,3 +1598,119 @@ def test_corrupt_checked_note_is_ignored(app, project):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text('{"stems": null}')
     assert checked.load_checked(session) == set()
+
+
+def open_window(app, project, w_=1300, h_=800):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    w.resize(w_, h_)
+    w.show()
+    app.processEvents()
+    w.grid.cols, w.grid.rows = 2, 2
+    w.grid.set_page(0)
+    w.grid.setFocus()
+    return w
+
+
+def test_arrow_keys_move_a_tile_cursor_and_enter_x_tick(app, project):
+    w = open_window(app, project)
+    g = w.grid
+    assert w.arrow_mode == "tiles" and g.hover == -1
+    assert w.handle_key("Right") and g.hover == 0 and g.kbd  # the first press shows the cursor
+    w.handle_key("Right")
+    assert g.hover == 1
+    w.handle_key("Down")
+    assert g.hover == 3
+    w.handle_key("Down")
+    assert g.hover == 3 and g.page == 0  # the edge of the page: no wrap, no page flip in this mode
+    w.handle_key("Left")
+    assert g.hover == 2
+    stem = g.page_items()[2].stem
+    w.handle_key("Return")
+    assert g.marks.get(stem) == "people" and g.pending(g.page_items()[2]) == "people"
+    w.handle_key("X")
+    assert g.marks.get(stem) == "skip"
+    w.handle_key("X")
+    assert stem not in g.marks  # again takes it back
+    w.handle_key("Space")  # still saves the page; Enter no longer does
+    assert g.page == 1
+    assert g.hover == 0  # the cursor starts on the first tile of the new page
+    w.close()
+
+
+def test_arrow_keys_can_flip_pages_instead(app, project):
+    w = open_window(app, project)
+    g = w.grid
+    w.set_arrow_mode("pages")
+    assert w.settings.value("arrows") == "pages"
+    assert w.handle_key("Right") and g.page == 1
+    w.handle_key("Down")
+    assert g.page == 1  # the last page: stays
+    w.handle_key("Left")
+    assert g.page == 0
+    assert g.hover == -1 and not g.kbd  # no tile cursor in this mode
+    w.handle_key("Return")
+    assert not g.marks  # Enter has no tile to tick without a cursor
+    w.handle_key("PageDown")
+    assert g.page == 1  # A / D / PageUp / PageDown flip pages in both modes
+    w.set_arrow_mode("tiles")
+    w.handle_key("Right")
+    assert g.page == 1 and g.hover == 0
+    w.close()
+
+
+def test_arrow_keys_stay_with_the_list_that_has_the_focus(app, project):
+    w = open_window(app, project)
+    w.frame_list.setFocus()
+    assert not w.handle_key("Return") or not w.grid.marks
+    assert w.grid.hover == -1
+    w.close()
+
+
+def test_checked_frames_can_be_returned_to_review(app, project):
+    from framelabel.core.boxes import Box
+
+    w = open_window(app, project)
+    ws = w.ws
+    first = ws.index[0]
+    ws.save(first.path, [Box(10, 10, 100, 120, 0)], 320, 180)  # a labeled frame
+    ws.save(ws.index[1].path, [], 320, 180)  # an empty one
+    a, b = ws.index[0].stem, ws.index[1].stem
+    ws.check([a, b])
+    w.on_view_chosen("checked")
+    assert w.mode == "grid" and w.grid.return_mode and {f.stem for f in w.queue} == {a, b}
+    # a labeled tile can be ticked here (it would be locked everywhere else)
+    assert w.grid.toggle(a, "people") and w.grid.pending(w.grid.by_stem[a]) == "people"
+    assert not w.grid.toggle(b, "skip")  # SKIP means nothing in this view
+    w.handle_key("Space")
+    assert w.ws.checked == {b} and "returned to Review" in w.central.toast.text()
+    assert [f.stem for f in w.queue] == [b]
+    w.undo_page()
+    assert w.ws.checked == {a, b} and {f.stem for f in w.queue} == {a, b}
+    # nothing ticked: the whole page goes back
+    w.handle_key("Space")
+    assert not w.ws.checked and w.ws.review.get(a) == "pos" and (project[1] / "labels" / f"{a}.txt").read_text().strip()
+    w.close()
+
+def test_frame_list_row_shows_a_photo_beside_the_list(app, project):
+    w = open_window(app, project)
+    w.on_view_chosen("all")
+    app.processEvents()
+    lst = w.frame_list
+    rect = lst.visualRect(w.frame_proxy.index(1, 0))
+    QTest.mouseMove(lst.viewport(), rect.center())
+    app.processEvents()
+    w.peek.show_now()  # the real one waits for the mouse to rest
+    assert w.peek.label.isVisible() and w.peek.shown_stem == w.queue[1].stem
+    assert not w.peek.label.pixmap().isNull() and w.peek.label.width() >= 300
+    QTest.mouseClick(lst.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, rect.center())
+    assert not w.peek.label.isVisible()  # a click closes it
+    w.set_peek(False)
+    QTest.mouseMove(lst.viewport(), rect.center())
+    w.peek.show_now()
+    assert not w.peek.label.isVisible() and w.settings.value("peek") == "false"
+    w.close()

@@ -625,7 +625,7 @@ def test_library_views_and_stage_order():
     assert [g for g, _ in GROUPS] == ["workflow", "library"] and STAGE_ORDER == ("triage", "edit", "review")
     assert [v.key for v in views if v.is_stage] == ["triage", "edit", "review"]
     assert [v.step for v in views if v.is_stage] == [1, 2, 3]
-    assert [v.key for v in views if v.group == "library"] == ["all", "unreviewed", "pos", "neg", "skip", "class:0", "class:1"]
+    assert [v.key for v in views if v.group == "library"] == ["all", "unreviewed", "pos", "neg", "skip", "checked", "class:0", "class:1"]
     assert len({v.key for v in views}) == len(views)
     assert all(v.parent in STAGE_ORDER for v in views if v.parent)  # a lens always refines a stage
     assert find_view("class:1", ["enemy", "corpse"]).label == "Class: corpse"

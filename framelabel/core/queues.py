@@ -238,6 +238,8 @@ def _queue(index: list[FrameInfo], name: str, conf: float, band: tuple[float, fl
         else:  # review: disagreements first (the biggest first), then the frames that only have a small object
             hits = [(-(m + 0.5 * e), h, 0, s) for s, (m, e, h) in flags.items() if m or e or h < small_h]
         return [by[s] for *_k, s in sorted(hits)]
+    if name == "checked":
+        return [f for f in index if f.stem in checked]
     if name == "unreviewed":
         return [f for f in index if f.status is None]
     if name in ("todo", "pos", "neg", "skip"):

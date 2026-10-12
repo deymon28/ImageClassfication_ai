@@ -151,6 +151,8 @@ class Workspace:
     # ---------------- grid
     def initial_mark(self, fi: FrameInfo, view: str = "triage") -> str | None:
         st = self.review.get(fi.stem)
+        if view == "checked":
+            return None  # nothing is ticked yet: a tick here means 'return this frame to Review'
         if st in ("todo", "pos"):
             return "people"
         if st == "skip":

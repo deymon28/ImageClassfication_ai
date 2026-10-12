@@ -83,6 +83,9 @@ VIEWS: tuple[ViewDef, ...] = (
     ViewDef("pos", "Labeled", "library", "grid", "Frames saved with boxes."),
     ViewDef("neg", "Empty", "library", "grid", "Frames saved as empty: the negative examples."),
     ViewDef("skip", "Skipped", "library", "grid", "Frames set aside as unusable; they are not exported."),
+    ViewDef("checked", "Checked", "library", "grid",
+            "Frames you marked as checked in Review, which hides them there. Tick the ones to look at again and return "
+            "them to Review."),
 )
 BY_KEY = {v.key: v for v in VIEWS}
 

@@ -33,6 +33,7 @@ from framelabel.core import index_cache
 from framelabel.perf import setup_logging, timed
 from .canvas import Canvas, to_qimage
 from .frame_list import FrameListModel
+from .peek import FramePeek
 from .grid import Grid
 from .keys import ACTION_INFO, Keymap, key_name
 from .theme import T, apply_theme
@@ -49,6 +50,12 @@ SIDE_WIDTH_LEFT, SIDE_WIDTH_RIGHT = 224, 236   # the side panels stay narrow: th
 STAGE_BY_ACTION = {action: stage for stage, action in STAGE_KEYS.items()}
 COUNTS_DEBOUNCE_MS = 400   # the counts next to the views are recomputed this long after the last change
 CONF_PRESETS = (0.10, 0.20, 0.30, 0.50)
+GRID_ONLY_KEYS = ("arrow_left", "arrow_right", "arrow_up", "arrow_down", "tile_mark", "tile_skip")
+GRID_FOCUS_KEYS = GRID_ONLY_KEYS   # only while the grid has the keyboard focus: a list or the tree keeps its arrows and Enter
+ARROW_MODES = (("tiles", "Move between tiles", "Left / Right / Up / Down move the cursor over the tiles of the page; "
+                "pages are flipped with A / D or PageUp / PageDown"),
+               ("pages", "Flip pages", "Left / Up: previous page, Right / Down: next page; the tile cursor is off"))
+ARROW_TEXT = {k: t for k, t, _h in ARROW_MODES}
 
 
 def read_frame(path: Path):
@@ -204,6 +211,8 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.grid.marks_changed.connect(self.update_status)
         self.grid.page_changed.connect(self.update_status)
         self.build_left_dock()
+        self.peek = FramePeek(self.frame_list, self.frame_at_index, self.grid, self)
+        self.peek.set_enabled(str(self.settings.value("peek", "true")).lower() in ("1", "true", "yes"))
         self.build_frame_dock()
         self.build_tools_dock()
         self.build_status_bar()
@@ -430,6 +439,10 @@ class MainWindow(WorkflowMixin, QMainWindow):
             key = self.keymap.first(self.KEY_OF.get(action, action)).replace("Ctrl+", "^").replace("Shift+", "⇧")
             b.setText(f"{self.ACTION_TITLES[action]}   {key}" if key else self.ACTION_TITLES[action])
             b.setToolTip(ACTION_INFO[self.KEY_OF.get(action, action)][1] if self.KEY_OF.get(action, action) in ACTION_INFO else "")
+        if getattr(self, "view_key", None) == "checked":  # there, saving the page means giving the frames back to Review
+            b = self.action_buttons["commit_page"]
+            b.setText(b.text().replace("Commit page", "Return to Review"))
+            b.setToolTip("Return the ticked tiles (the whole page if none is ticked) to Review")
 
     def apply_panels(self) -> None:
         """Side panels on / off (Ctrl+B); the box list only exists for the editor."""
@@ -560,6 +573,25 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.act(m, "Project (classes, sources, zones)...", self.project_settings)
         self.act(m, "Keyboard shortcuts...", self.keyboard_dialog)
         self.act(m, "Performance...", self.performance_dialog)
+        am = m.addMenu("Arrow keys in the grid")
+        self.arrow_mode = str(self.settings.value("arrows", "tiles"))
+        if self.arrow_mode not in ARROW_TEXT:
+            self.arrow_mode = "tiles"
+        arrow_group = QActionGroup(self)
+        for key, text, tip in ARROW_MODES:
+            a = QAction(text, self, checkable=True)
+            a.setToolTip(tip)
+            a.setStatusTip(tip)
+            a.setChecked(key == self.arrow_mode)
+            a.triggered.connect(lambda _=False, k=key: self.set_arrow_mode(k))
+            arrow_group.addAction(a)
+            am.addAction(a)
+        self.arrow_actions = arrow_group
+        a = QAction("Preview a frame when the mouse rests on the list", self, checkable=True)
+        a.setChecked(str(self.settings.value("peek", "true")).lower() in ("1", "true", "yes"))
+        a.setToolTip("A small photo with its boxes appears beside the frame list")
+        a.toggled.connect(self.set_peek)
+        m.addAction(a)
 
         m = mb.addMenu("&Help")
         self.act(m, "Keyboard and mouse help", self.help_dialog, shortcut="F1")
@@ -575,11 +607,15 @@ class MainWindow(WorkflowMixin, QMainWindow):
         """The keys of the current mode, short, for the status bar."""
         k = self.keymap.first
         if self.mode == "grid":
+            arrows = "arrows: tiles, Enter: tick, X: skip" if self.arrow_mode == "tiles" else "arrows: pages"
+            if self.view_key == "checked":
+                return (f"click: tick to return  |  {k('commit_page')}: return the ticked (or the page) to Review  |  "
+                        f"double-click: editor  |  {k('undo')}: undo  |  {arrows}")
             if self.grid.sticky:
                 return (f"click: has objects  |  Ctrl+click: skip  |  double-click: editor  |  wheel: zoom  |  "
-                        f"{k('commit_page')}: save + next  |  {k('switch_mode')}: editor")
+                        f"{k('commit_page')}: save + next  |  {arrows}")
             return (f"click: has objects  |  Ctrl+click: skip  |  double-click: editor  |  {k('commit_page')}: save page  |  "
-                    f"{k('undo')}: undo page  |  {k('switch_mode')}: editor")
+                    f"{k('undo')}: undo page  |  {arrows}  |  {k('switch_mode')}: editor")
         return (f"drag: new box  |  RMB: delete  |  wheel: zoom  |  {k('accept_next')}: save + next  |  {k('empty_next')}: empty  |  "
                 f"{k('skip_next')}: skip  |  {k('switch_mode')}: grid")
 
@@ -1048,6 +1084,36 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.grid.clear_cache()
         self.grid.set_page(first // self.grid.per_page)
 
+    def set_arrow_mode(self, mode: str) -> None:
+        """What the arrow keys do in the grid: move a tile cursor, or flip pages. Only one of the two is on."""
+        self.arrow_mode = mode
+        self.settings.setValue("arrows", mode)
+        for a in self.arrow_actions.actions():
+            a.setChecked(a.text() == ARROW_TEXT[mode])
+        self.grid.kbd = False
+        self.grid.hover = -1
+        self.grid.update()
+        self.update_status()
+        self.toast("Arrow keys: " + ARROW_TEXT[mode].lower())
+
+    def set_peek(self, on: bool) -> None:
+        self.settings.setValue("peek", "true" if on else "false")
+        self.peek.set_enabled(on)
+
+    def frame_at_index(self, ix):
+        """The frame of a row of the (filtered) frame list, or None."""
+        row = self.frame_proxy.mapToSource(ix).row()
+        return self.queue[row] if 0 <= row < len(self.queue) else None
+
+    def arrow(self, action: str) -> None:
+        g = self.grid
+        if self.arrow_mode == "pages":
+            g.set_page(g.page + (-1 if action in ("arrow_left", "arrow_up") else 1))
+            self.select_frame_row(min(g.page * g.per_page, max(0, len(self.queue) - 1)))
+            return
+        dx, dy = {"arrow_left": (-1, 0), "arrow_right": (1, 0), "arrow_up": (0, -1), "arrow_down": (0, 1)}[action]
+        g.move_cursor(dx, dy)
+
     STATUS_WORDS = {"pos": "labeled", "neg": "empty", "skip": "skipped", "todo": "marked", None: "new"}
 
     def grid_stats(self) -> str:
@@ -1056,6 +1122,9 @@ class MainWindow(WorkflowMixin, QMainWindow):
         g = self.grid
         items = g.page_items()
         n_obj = sum(1 for fi in items if g.pending(fi) == "people")
+        if g.return_mode:  # Library > Checked: a tick means 'return to Review'
+            n = n_obj or len(items)
+            return f"<span style='color:{T['accent_hi']}'><b>{n}</b> to return{'' if n_obj else ' (whole page)'}</span>"
         n_skip = sum(1 for fi in items if g.pending(fi) == "skip")
         n_empty = sum(1 for fi in items if g.pending(fi) == "empty" or (fi.status is None and g.marks.get(fi.stem) is None))
         triage = self.current_stage() == "triage"
@@ -1091,6 +1160,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
             g = self.grid
             n_marked = sum(1 for fi in g.page_items() if g.pending(fi) == "people")
             n_skip = sum(1 for fi in g.page_items() if g.pending(fi) == "skip")
+            changes = f"{n_marked} to return" if g.return_mode else f"{n_marked} has objects, {n_skip} skip"
             thr = self.project.ui_threshold
             n_sugg = sum(1 for fi in g.page_items() if g.marks.get(fi.stem) == "skip" and fi.status is None and fi.ui < thr)
             sugg = f" ({n_sugg} pre-marked as interface screens: click to undo)" if n_sugg else ""
@@ -1098,7 +1168,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
                      f"Grid  |  page {g.page + 1} of {g.n_pages}  |  {len(self.queue)} frames")
             self.status_label.setText(f"GRID  {where_name} (shown conf {self.conf_spin.value():.2f}): "
                                       f"{len(self.queue)} frames, page {g.page + 1}/{g.n_pages}  |  to change: "
-                                      f"{n_marked} has objects, {n_skip} skip{sugg}")
+                                      f"{changes}{sugg}")
             stats = self.grid_stats()
         elif self.queue and self.cur_path is not None:
             fi = self.queue[self.idx]
@@ -1164,12 +1234,15 @@ class MainWindow(WorkflowMixin, QMainWindow):
                 self.grid.close_preview()
             return True
         grid_actions = ("commit_page", "prev_page", "next_page", "grid_view", "switch_mode", "fullscreen", "reload", "goto_frame",
-                        "toggle_panels", "go_triage", "go_label", "go_review", "command_palette", "open_frame", "undo")
+                        "toggle_panels", "go_triage", "go_label", "go_review", "command_palette", "open_frame", "undo",
+                        "arrow_left", "arrow_right", "arrow_up", "arrow_down", "tile_mark", "tile_skip")
         for action in self.keymap.actions_for(name):
             if self.mode == "grid" and action not in grid_actions:
                 continue
-            if self.mode == "edit" and action in ("commit_page", "prev_page", "next_page", "open_frame"):
+            if self.mode == "edit" and action in ("commit_page", "prev_page", "next_page", "open_frame", *GRID_ONLY_KEYS):
                 continue
+            if action in GRID_FOCUS_KEYS and QApplication.focusWidget() is not self.grid:
+                continue  # the arrow keys and Enter belong to a list or the tree while one has the focus
             self.do(action)
             return True
         return False
@@ -1299,6 +1372,12 @@ class MainWindow(WorkflowMixin, QMainWindow):
         if action == "open_frame":
             self.open_in_editor(g.hovered_stem())
             return
+        if action in ("tile_mark", "tile_skip"):
+            g.mark_at_cursor("people" if action == "tile_mark" else "skip", start=self.arrow_mode == "tiles")
+            return
+        if action.startswith("arrow_"):
+            self.arrow(action)
+            return
         if action == "prev_page":
             g.set_page(g.page - 1)
         elif action == "next_page":
@@ -1309,6 +1388,9 @@ class MainWindow(WorkflowMixin, QMainWindow):
         """Save the page: ticked tiles go to Label, SKIP tiles are skipped, the unmarked ones become empty. In Review the
         page is also marked as checked. A toast with Undo says what happened."""
         g = self.grid
+        if self.view_key == "checked":
+            self.return_to_review()
+            return
         items = g.page_items()
         n_obj = sum(1 for fi in items if g.pending(fi) == "people")
         n_skip = sum(1 for fi in items if g.pending(fi) == "skip")
@@ -1350,6 +1432,25 @@ class MainWindow(WorkflowMixin, QMainWindow):
             g.set_page(g.page + 1)
         self.select_frame_row(min(g.page * g.per_page, max(0, len(self.queue) - 1)))
 
+    def return_to_review(self) -> None:
+        """Library > Checked: the ticked tiles (the whole page when none is ticked) are no longer checked, so Review shows
+        them again if they still deserve a look. The toast has Undo."""
+        g = self.grid
+        stems = g.stems_on_page()
+        pick = [s for s in stems if g.marks.get(s) == "people"] or stems
+        if not pick:
+            self.toast("No frames to return")
+            return
+        page = g.page
+        self.commit_current()
+        self.ws.uncheck(pick)
+        self.undo_pages.append({"view": "checked", "stem": pick[0], "undo": {}, "marks": {}, "checked": [], "unchecked": pick})
+        del self.undo_pages[:-20]
+        self.schedule_counts()
+        self.apply_queue()
+        g.set_page(page)
+        self.toast(f"{len(pick)} frame{'s' if len(pick) != 1 else ''} returned to Review", ("Undo", self.undo_page))
+
     def undo_page(self) -> None:
         """Take back the last saved grid page: statuses and label files as they were, the page shown again with its marks."""
         if self.ws is None or not self.undo_pages:
@@ -1360,6 +1461,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
         restored, left = self.ws.undo_page(entry["undo"])
         self.pace.add(-len(restored))
         self.ws.uncheck(entry["checked"])
+        self.ws.check(entry.get("unchecked", []))
         self.schedule_counts()
         view = entry["view"] if entry["view"] in self.view_tree.items else "triage"
         self.set_mode("grid", queue=view, keep_stem=entry["stem"])
@@ -1369,7 +1471,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.grid.marks.update({k: m for k, m in entry["marks"].items() if k in on_page and k not in left})
         self.grid.update()
         self.update_status()
-        n = len(restored) + len(entry["checked"])
+        n = len(restored) + len(entry["checked"]) + len(entry.get("unchecked", []))
         text = f"Page restored ({n} frame{'s' if n != 1 else ''})"
         if left:
             text += f"; {len(left)} decided again since, left as they are"
@@ -1725,6 +1827,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
                 proc.kill()
                 proc.waitForFinished(5000)
         self.closing = True
+        self.peek.hide()
         self.counts_timer.stop()
         self.conf_timer.stop()
         self.commit_current()

@@ -17,7 +17,7 @@ from .theme import T, qc
 
 GRID_SIZES = ((1, 1), (2, 1), (1, 2), (2, 2), (3, 3), (4, 3), (4, 4), (5, 4))
 PROGRESS_ROLE = Qt.ItemDataRole.UserRole + 1   # 0..1 for a stage that has a progress bar
-LIBRARY_DOTS = {"all": "text3", "unreviewed": "text", "pos": "ok", "neg": "neutral", "skip": "skip"}  # theme tokens
+LIBRARY_DOTS = {"all": "text3", "unreviewed": "text", "pos": "ok", "neg": "neutral", "skip": "skip", "checked": "accent"}  # theme tokens
 
 
 def grid_size_text(cols: int, rows: int, short: bool = False) -> str:

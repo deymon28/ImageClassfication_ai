@@ -73,7 +73,8 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
    the way that suits it, then the library:
    * **1 Triage** (grid): the frames the model found nothing in come as a page of tiles. Click = has objects, MMB /
      Ctrl+click = skip, hold the right button = peek at the full-size photo, Space = save the page (unmarked tiles become
-     empty, ticked ones go to Label). The toast has **Undo** (Ctrl+Z in the grid takes back the last saved pages; frames
+     empty, ticked ones go to Label). Without the mouse: the arrow keys move a cursor over the tiles, Enter ticks, X (or S)
+     skips, O opens the tile in the editor (*Settings > Arrow keys in the grid* can make the arrows flip pages instead). The toast has **Undo** (Ctrl+Z in the grid takes back the last saved pages; frames
      decided again since stay as they are). With
      *Tiles* 1 x 1 the tile is the photo itself (wheel zoom, drag pan, Space saves and shows the next). Lenses: *Weak
      proposals*, *Only in ignore zone*, *Interface screens* (pre-marked SKIP).
@@ -85,8 +86,10 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
      Tiles and the editor show the labels in the class colours and the proposals they do not cover as dashed amber boxes
      (in the editor a click adds one). Space saves the page as **checked** (K marks one frame in the editor); checked
      frames leave Review.
-   * **Library**: all frames, new, labeled, empty, skipped, by class (grid; double-click a tile = open it in the editor,
-     Tab comes back to its page; labeled tiles are locked in the grid so a click cannot cost them their boxes).
+   * **Library**: all frames, new, labeled, empty, skipped, **checked**, by class (grid; double-click a tile = open it in
+     the editor, Tab comes back to its page; labeled tiles are locked in the grid so a click cannot cost them their
+     boxes). *Checked* lists the frames you checked in Review: tick the ones to look at again and press Space (*Return to
+     Review*; with none ticked the whole page returns; the toast has Undo).
 
    Every stage row shows what is left (a green check when done, a bar for how far Triage and Label are), the icon of the
    way it opens, and its key (Ctrl+1 / 2 / 3); V goes to the next stage that has frames. A frame is *new* (no
@@ -94,7 +97,8 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
    confidence** (right panel, with presets) decides which frames are in Triage and which in Label; it is applied at once
    and remembered per project (the project's `show_conf` is only the first default). *Tiles* (top bar, or *View >
    Grid tiles per page*): 1 x 1, 2 x 1, 1 x 2, 2 x 2 ... 5 x 4. *Ctrl+B* hides the side panels, **Ctrl+K** searches
-   views, actions and frames, F1 lists every key.
+   views, actions and frames, F1 lists every key. Pointing at a row of the frame list for a moment shows the photo with its
+   boxes beside the list (*Settings > Preview a frame when the mouse rests on the list*).
 3. **Editor**: proposals are dashed boxes with their confidence; drag on empty space = new box, drag a box = move,
    drag a corner or an edge = resize, RMB = delete, wheel = zoom at cursor, MMB drag = pan. Space = accept and next,
    E = empty, X = skip, A/D = previous/next, N = next unreviewed, Ctrl+Z / Ctrl+Y = undo/redo, R = back to the model's

@@ -507,6 +507,8 @@ class HelpDialog(QDialog):
         "Grid": [("Click", "mark the frame 'has objects' (click again to undo)"),
                  ("Ctrl+click or middle button", "mark the frame SKIP"),
                  ("Double-click", "open the frame in the Editor (Tab comes back to its page)"),
+                 ("Arrow keys, Enter, X", "move the tile cursor (or flip pages: Settings > Arrow keys in the grid); Enter ticks the "
+                                          "tile, X marks it SKIP; O opens it in the editor"),
                  ("Labeled tiles", "locked: a click cannot cost a frame its boxes; open it in the Editor to change it"),
                  ("Hold the right button", "peek at the photo; it closes when you let go (a quick click keeps it open)"),
                  ("1 × 1 tiles", "the tile is the photo itself: wheel zoom, drag to pan, no right click needed")],

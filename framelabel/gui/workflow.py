@@ -72,6 +72,7 @@ class WorkflowMixin:
         self.context_bar.show_tiles(mode == "grid")
         self.context_bar.show_sort(bool(self.current_stage() and BY_KEY[self.current_stage()].sortable))
         self.action_buttons["mark_checked"].setVisible(self.current_stage() == "review")
+        self.refresh_action_texts()
         self.apply_panels()
         if mode == "grid":
             self.box_table.setRowCount(0)
@@ -205,6 +206,8 @@ class WorkflowMixin:
     def empty_message(self) -> str:
         """What the work area says when the view has no frames: what this is, why it is empty and where to go on."""
         vd = self.view_def()
+        if vd.key == "checked":
+            return "Nothing is checked yet. Frames you check in Review (K or Space) are listed here, in case one was a mistake."
         if vd.group != "workflow":
             return f"No frames in {vd.label}."
         name = self.view_name()
@@ -231,6 +234,9 @@ class WorkflowMixin:
         if vd.stage == "review":
             hint += (" Space marks the page as checked; double-click a tile to fix it in the Editor." if grid
                      else f" Space saves and marks the frame as checked; {self.keymap.first('mark_checked')} only marks it.")
+        elif vd.key == "checked" and grid:
+            hint = ("Frames you checked in Review. Click the tiles you want to look at again and press Space (or the button) "
+                    "to return them to Review; with none ticked the whole page returns.")
         elif vd.group == "library" and grid:
             hint += " Double-click a tile to open it in the Editor."
         return title, "Grid" if grid else "Editor", hint
@@ -267,6 +273,7 @@ class WorkflowMixin:
             marks = dict(self.grid.marks) if keep_stem else {}
             was = {fi.stem: fi.status for fi in self.grid.items} if marks else {}
             self.grid.show_ignored = name == "zone"
+            self.grid.return_mode = name == "checked"
             self.grid.conf = self.ws.conf
             self.grid.set_items(self.queue, page, initial_mark=lambda fi, v=name: self.ws.initial_mark(fi, v))
             if marks:  # marks not saved yet survive the rebuild, unless the frame was decided meanwhile (in the editor)

@@ -75,7 +75,9 @@ class Grid(QWidget):
         self.resize_timer.setSingleShot(True)
         self.resize_timer.timeout.connect(self.end_resize)
         self.tile_ready.connect(self.update)
-        self.hover = -1
+        self.hover = -1             # the tile under the mouse, or the one the arrow keys moved to
+        self.kbd = False            # the keys moved it last (then it is drawn as a cursor and a new page starts on tile 0)
+        self.return_mode = False    # the Checked view: a tick means 'return this frame to Review', labeled tiles can be ticked
         self.preview: FrameInfo | None = None
         self.preview_img: np.ndarray | None = None
         self.preview_q: QImage | None = None
@@ -138,6 +140,8 @@ class Grid(QWidget):
         for fi in self.page_items():  # ticks not saved yet survive paging; a page seen for the first time starts from its status
             if fi.stem not in self.marks and (m := self.initial_mark(fi)):
                 self.marks[fi.stem] = m
+        self.hover = (0 if self.kbd else self.hover) if self.page_items() else -1
+        self.hover = min(self.hover, len(self.page_items()) - 1)
         self.close_preview()
         if self.sticky and self.items:
             self.open_preview(self.page_items()[0])
@@ -148,7 +152,10 @@ class Grid(QWidget):
         """Tick / untick a mark. A labeled frame cannot be changed from the grid (a stray click must not cost its
         boxes): that says so through `locked` and changes nothing. Returns whether the mark changed."""
         fi = self.by_stem.get(stem)
-        if fi is not None and fi.status == "pos":
+        if self.return_mode:
+            if kind != "people":
+                return False
+        elif fi is not None and fi.status == "pos":
             self.locked.emit(stem)
             return False
         if self.marks.get(stem) == kind:
@@ -163,6 +170,8 @@ class Grid(QWidget):
         """The mark that is not saved yet: what the tile shows as a change ('people', 'skip', 'empty'), None when the
         tile just shows the frame's decision."""
         mark, stored = self.marks.get(fi.stem), STORED_MARK.get(fi.status)
+        if self.return_mode:
+            return "people" if mark == "people" else None
         if mark == stored:
             return None
         return mark or "empty"
@@ -200,6 +209,41 @@ class Grid(QWidget):
         if 0 <= self.hover < len(items):
             return items[self.hover].stem
         return items[0].stem if items else None
+
+    @property
+    def people_text(self) -> str:
+        return "RETURN" if self.return_mode else "HAS OBJECTS"
+
+    def move_cursor(self, dx: int, dy: int) -> bool:
+        """Move the arrow-key cursor by a tile (dx) or a row (dy) within the page; the first press only shows it on the
+        first tile. Returns whether it moved."""
+        n = len(self.page_items())
+        if n == 0:
+            return False
+        if self.hover < 0:
+            self.hover, self.kbd = 0, True
+            self.update()
+            return True
+        self.kbd = True
+        self.update()
+        i, j = self.hover, self.hover + dx + dy * self.cols
+        if dy > 0 and j >= n and i // self.cols < (n - 1) // self.cols:
+            j = n - 1  # the row below is shorter: its last tile
+        if not 0 <= j < n or (dx and j // self.cols != i // self.cols):
+            return False
+        self.hover = j
+        self.update()
+        return True
+
+    def mark_at_cursor(self, kind: str, start: bool = True) -> bool:
+        """Tick (or untick) the tile under the cursor / mouse like a click would. Without a tile under either, `start`
+        begins at the first tile; False when nothing was ticked."""
+        items = self.page_items()
+        if not 0 <= self.hover < len(items):
+            if not items or not start:
+                return False
+            self.hover, self.kbd = 0, True
+        return self.toggle(items[self.hover].stem, kind)
 
     # ---------------- what is drawn on a frame
     def overlays(self, fi: FrameInfo) -> tuple[list, list, list, list]:
@@ -344,7 +388,7 @@ class Grid(QWidget):
                 p.setPen(QPen(qc("accent"), 3))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), TILE_RADIUS, TILE_RADIUS)
-                self.pill(p, x + 6, y + 6, "HAS OBJECTS", qc("accent"), QColor("#ffffff"))
+                self.pill(p, x + 6, y + 6, self.people_text, qc("accent"), QColor("#ffffff"))
             elif change == "skip":
                 p.save()
                 p.setClipPath(clip)
@@ -360,6 +404,10 @@ class Grid(QWidget):
                 p.setPen(QPen(QColor(255, 255, 255, 150), 2))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), TILE_RADIUS, TILE_RADIUS)
+            if self.kbd and i == self.hover:  # the cursor of the arrow keys, also over a tile that has a pending change
+                p.setPen(QPen(QColor(255, 255, 255, 235), 2, Qt.PenStyle.DashLine))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(rect.adjusted(5, 5, -5, -5), TILE_RADIUS, TILE_RADIUS)
             tag = STATUS_TAGS.get(fi.status or "", "")
             if fi.status == "pos" and fi.label_cls:
                 tag += f" {len(fi.label_cls)}"
@@ -429,9 +477,13 @@ class Grid(QWidget):
             p.setPen(QPen(qc("line2"), 5))
             p.drawRect(self.rect().adjusted(2, 2, -2, -2))
         status = STATUS_TAGS.get(fi.status or "", "new")
-        mark = {"people": "HAS OBJECTS", "skip": "SKIP", "empty": "EMPTY"}.get(kind, status)
-        hint = ("click: has objects | Ctrl+click or MMB: skip | double-click: editor | wheel: zoom | drag: pan | Z: fit" if self.sticky
-                else "click: toggle 'has objects' | RMB / Esc: back")
+        mark = {"people": self.people_text, "skip": "SKIP", "empty": "EMPTY"}.get(kind, status)
+        if self.return_mode:
+            hint = ("click: tick to return | double-click: editor | wheel: zoom | drag: pan | Z: fit" if self.sticky
+                    else "click: tick to return | RMB / Esc: back")
+        else:
+            hint = ("click: has objects | Ctrl+click or MMB: skip | double-click: editor | wheel: zoom | drag: pan | Z: fit"
+                    if self.sticky else "click: toggle 'has objects' | RMB / Esc: back")
         self.badge(p, 10, 10, f"{fi.stem}  [{mark}]  zoom {v.zoom:.1f}x   {hint}", qc("text"))
 
     # ---------------- preview
@@ -504,8 +556,9 @@ class Grid(QWidget):
             self.last = pos
             return
         h = self.tile_at(pos.x(), pos.y())
-        if h != self.hover:
+        if h != self.hover or self.kbd:
             self.hover = h
+            self.kbd = False
             self.update()
 
     def mouseReleaseEvent(self, e) -> None:
@@ -532,8 +585,9 @@ class Grid(QWidget):
             self.update()
 
     def leaveEvent(self, _e) -> None:
-        self.hover = -1
-        self.update()
+        if not self.kbd:  # the arrow-key cursor stays when the mouse leaves
+            self.hover = -1
+            self.update()
 
     def stems_on_page(self) -> list[str]:
         return [fi.stem for fi in self.page_items()]

@@ -8,7 +8,7 @@ and a **library** for everything else:
 | 1 | **Triage** | grid | click the tiles that show an object; Space saves the page, the unmarked tiles become empty | new frames the model found nothing in |
 | 2 | **Label** | editor | fix the model's boxes or draw your own; Space saves and goes on | new frames with a proposal, plus the frames you marked in Triage |
 | 3 | **Review** | grid | a second look at saved frames: fix them, or mark them checked | decided frames with a possibly missed / wrong box or a small object |
-| | **Library** | grid | find anything: all, new, labeled, empty, skipped, by class | every frame, by decision or class |
+| | **Library** | grid | find anything: all, new, labeled, empty, skipped, checked, by class | every frame, by decision, class or "checked" |
 
 The stage rows of the list carry a **number** (the order), an **icon** (the way it opens: a grid of tiles, or a box with
 handles; the same two icons are on the Grid | Editor switch) and the **count** of what is left (a green check when it is
@@ -20,6 +20,16 @@ subset of its stage (so its count never exceeds the stage's), and only the curre
 
 The **order** of the Label stage (time, unsure proposals first, small objects first) is a sort in the top bar, not a
 view: it does not change which frames there are.
+
+**Without the mouse** (grid): the arrow keys move a cursor over the tiles (a dashed ring), Enter ticks the tile like a click,
+X (or S) marks it SKIP like Ctrl+click, O opens it in the editor; A / D / PageUp / PageDown flip pages. *Settings > Arrow
+keys in the grid* chooses what the arrows do, and only one of the two is on: **move between tiles** (they stay on the
+page) or **flip pages** (Left / Up back, Right / Down forward, no cursor). The arrow keys and Enter belong to a list or
+the tree while one has the keyboard focus.
+
+**Checked** (Library): the frames checked in Review, so a mistaken check can be taken back: click the tiles to look at
+again (the pill says RETURN, labeled tiles are not locked here) and press Space; with none ticked the whole page returns.
+The toast has Undo.
 
 **Mode is independent**: every view can be shown as a grid or in the editor (Tab, or the switch at the top; each view
 remembers how you last looked at it). Double-click a tile (or O) opens it in the editor, Tab comes back to its page.
