@@ -764,3 +764,38 @@ def test_pace_takes_back_undone_decisions():
     assert p.per_minute() is not None
     p.add(-30)
     assert p.per_minute() is None  # nothing left to measure
+
+
+def test_grow_box_moves_every_side_inside_the_image():
+    from framelabel.core.boxes import Box, grow_box
+
+    b = grow_box(Box(100, 50, 150, 90, 1), 2, 320, 180)
+    assert (b.x1, b.y1, b.x2, b.y2, b.cls) == (98, 48, 152, 92, 1)
+    b = grow_box(Box(1, 1, 318, 179), 3, 320, 180)
+    assert (b.x1, b.y1, b.x2, b.y2) == (0, 0, 320, 180)  # kept inside the photo
+    b = grow_box(Box(100, 50, 104, 54), -5, 320, 180)
+    assert b.w >= 2 and b.h >= 2  # never turned inside out
+    b = grow_box(Box(150, 90, 100, 50), -1, 320, 180)  # a box drawn backwards is normalised first
+    assert (b.x1, b.y1, b.x2, b.y2) == (101, 51, 149, 89)
+
+
+def test_review_keeps_the_class_list_the_labels_were_made_with(tmp_path):
+    import json
+
+    from framelabel.core.session import Review
+
+    p = tmp_path / "review.json"
+    p.write_text(json.dumps({"version": 1, "classes": ["a", "b"], "status": {"x": "pos"}}))
+    r = Review(p, ["b", "a"])  # reordered: the numbers in the labels would change meaning
+    assert r.classes_conflict
+    r.set("y", "neg")
+    assert json.loads(p.read_text())["classes"] == ["a", "b"]  # never overwritten by a conflicting list
+    r = Review(p, ["a", "b", "c"])  # an extension is safe
+    assert not r.classes_conflict
+    r.set("z", "neg")
+    assert json.loads(p.read_text())["classes"] == ["a", "b", "c"]
+    r = Review(p, ["c", "a"])
+    assert r.classes_conflict
+    r.adopt_classes()  # the user said the numbers still mean the same
+    assert json.loads(p.read_text())["classes"] == ["c", "a"] and not Review(p, ["c", "a"]).classes_conflict
+    assert not Review(p).classes_conflict  # no project list: nothing to compare

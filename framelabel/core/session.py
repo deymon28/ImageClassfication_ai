@@ -23,14 +23,29 @@ class Review:
     def __init__(self, path: Path, classes: list[str] | None = None):
         self.path = path
         self.classes = list(classes) if classes else None
+        self.stored_classes: list[str] | None = None  # the class list the file was written with
         self.extra: dict = {}
         self.status: dict[str, str] = {}
         if path.exists():
             data = json.loads(path.read_text(encoding="utf-8"))
             self.status = dict(data.get("status", {}))
             self.extra = {k: v for k, v in data.items() if k not in ("version", "classes", "status")}
+            stored = data.get("classes")
+            self.stored_classes = list(stored) if stored else None
             if self.classes is None:
-                self.classes = data.get("classes")
+                self.classes = stored
+
+    @property
+    def classes_conflict(self) -> bool:
+        """The project's class list is not the one this session was labeled with (or an extension of it). Labels store the
+        class *number*, so a reordered, renamed or shortened list would silently change what existing boxes mean."""
+        s, c = self.stored_classes, self.classes
+        return bool(s and c and list(c[:len(s)]) != list(s))
+
+    def adopt_classes(self) -> None:
+        """Accept the project's class list for this session (after the user confirmed that the numbers still mean the same)."""
+        self.stored_classes = list(self.classes or [])
+        self.save()
 
     def get(self, stem: str) -> str | None:
         return self.status.get(stem)
@@ -50,7 +65,10 @@ class Review:
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"version": 1, "classes": self.classes or [], "status": self.status, **self.extra}
+        # a conflicting project list never overwrites the one the labels were made with; an extension of it does
+        classes = (self.stored_classes if self.classes_conflict else self.classes) or []
+        self.stored_classes = list(classes) or None
+        data = {"version": 1, "classes": classes, "status": self.status, **self.extra}
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=0), encoding="utf-8")
         os.replace(tmp, self.path)

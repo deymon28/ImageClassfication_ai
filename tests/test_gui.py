@@ -1714,3 +1714,66 @@ def test_frame_list_row_shows_a_photo_beside_the_list(app, project):
     w.peek.show_now()
     assert not w.peek.label.isVisible() and w.settings.value("peek") == "false"
     w.close()
+
+def test_a_session_with_other_classes_asks_before_it_opens(app, project, monkeypatch):
+    import json
+
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    review = s / "review.json"
+
+    def start(answer):
+        review.write_text(json.dumps({"version": 1, "classes": ["corpse", "enemy"], "status": {}}))
+        w = MainWindow()
+        w.settings.clear()
+        monkeypatch.setattr(w, "ask_class_conflict", lambda ws: answer)
+        w.open_target(path)
+        wait_until(app, lambda: w.loader is None and (w.ws is not None or "Not opened" in w.canvas.message))
+        return w
+
+    w = start("cancel")
+    assert w.ws is None and "Not opened" in w.canvas.message
+    w.close()
+    w = start("keep")
+    assert w.ws is not None
+    w.handle_key("Space")  # a save writes the file, which keeps the session's list
+    assert json.loads(review.read_text())["classes"] == ["corpse", "enemy"]
+    w.close()
+    w = start("adopt")
+    assert w.ws is not None and json.loads(review.read_text())["classes"] == ["enemy", "corpse"]
+    w.close()
+
+
+def test_sam_results_get_the_correction_from_the_settings(app, project):
+    from framelabel.core.boxes import Box
+
+    w = open_window(app, project)
+    w.set_mode("edit", queue="edit")
+    app.processEvents()
+    assert w.cur_path is not None and w.canvas.img is not None
+    w.settings.setValue("sam/adjust_px", 2)
+    w.canvas.boxes = [Box(10, 10, 20, 20, 0)]
+    target = w.canvas.boxes[0]
+    w.sam_pending[1] = {"path": w.cur_path, "box": target}
+    w.on_sam_ready(1, Box(100, 50, 150, 90, 0))
+    b = w.canvas.boxes[0]
+    assert (b.x1, b.y1, b.x2, b.y2) == (98, 48, 152, 92)  # two pixels out on every side
+    w.settings.setValue("sam/adjust_px", -1)
+    w.sam_pending[2] = {"path": w.cur_path, "box": w.canvas.boxes[0]}
+    w.on_sam_ready(2, Box(100, 50, 150, 90, 0))
+    b = w.canvas.boxes[0]
+    assert (b.x1, b.y1, b.x2, b.y2) == (101, 51, 149, 89)
+    assert "corrected -1" in w.status_label.text()
+    w.close()
+
+
+def test_the_list_preview_survives_the_window_going_away(app, project):
+    from PyQt6 import sip
+
+    w = open_window(app, project)
+    peek = w.peek
+    w.close()
+    sip.delete(peek.label)  # what an exit does: the label is gone, a late event must not raise
+    peek.hide()
+    peek.show_now()

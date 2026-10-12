@@ -8,7 +8,7 @@ from collections import OrderedDict
 import cv2
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, QTimer, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
-from PyQt6.QtWidgets import QApplication, QLabel, QListView
+from PyQt6.QtWidgets import QApplication, QLabel, QListView, QWidget
 
 from .canvas import to_qimage
 from .theme import qc
@@ -28,7 +28,9 @@ class FramePeek(QObject):
         self.pix: OrderedDict[tuple, QPixmap] = OrderedDict()
         self.shown_stem: str | None = None
         self.pos = QPoint()
-        self.label = QLabel(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        # owned by the main window: it is deleted with it, never before the list that talks to it
+        self.label = QLabel(parent if isinstance(parent, QWidget) else None,
+                            Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
         self.label.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.label.setStyleSheet("QLabel { background: #0b0c0f; border: 1px solid #3a3f4b; padding: 0; }")
@@ -63,9 +65,12 @@ class FramePeek(QObject):
         return False
 
     def hide(self, *_args) -> None:
-        self.timer.stop()
         self.shown_stem = None
-        self.label.hide()
+        try:
+            self.timer.stop()
+            self.label.hide()
+        except RuntimeError:  # the window is being destroyed: its events can arrive after the label is gone
+            pass
 
     def photo(self, fi) -> QPixmap | None:
         """The frame at the preview size with its boxes and a caption (cached per frame state)."""

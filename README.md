@@ -62,6 +62,9 @@ Without a project file the class list comes from the folder's `review.json` (or 
 Labels are YOLO rows `cls cx cy w h` (normalized); proposals add a confidence column. `review.json` keeps the
 per-frame status: `pos` (labeled with objects), `neg` (empty), `skip` (unusable), `todo` (marked in the grid, not
 labeled yet). Every decision is written immediately (atomically), so labeling can stop and resume at any time.
+`review.json` also keeps the class list the labels were made with (the label rows hold the class *number*). If a
+project's list is not that list or an extension of it (reordered, renamed, shortened), opening the session asks first
+and never rewrites the stored list unless you choose to.
 
 ## Workflow
 
@@ -108,7 +111,8 @@ labeled yet). Every decision is written immediately (atomically), so labeling ca
    previous labeled frame, T tracks them onto this frame (template matching, then snapped to overlapping proposals);
    "Carry boxes" does that automatically when moving to an unreviewed frame without proposals. F fits the selected
    box with SAM, Alt+click creates a box from a point with SAM, "Fit new boxes with SAM" refines every drawn box.
-   SAM runs on a crop around the object, so far (small) people are fitted too.
+   SAM runs on a crop around the object, so far (small) people are fitted too. *Settings > SAM fit correction* moves
+   every side of each SAM box by a fixed number of pixels outward or inward (for a fitter that is a pixel or two tight).
 5. **Where you are and what happened**: the thin bar above the work area says which stage (and lens) and where in it, in
    the grid what saving the page will change; the hint card under the list says what the current view is for; the keys
    of the mode are in the status bar; actions confirm themselves with a short message over the image (*Saved: 2 boxes*,

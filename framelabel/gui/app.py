@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (QMenu, QAbstractSpinBox, QApplication, QCheckBox, Q
                              QPushButton, QSizePolicy, QSplitter, QStackedWidget, QTableWidget, QToolButton, QVBoxLayout,
                              QWidget)
 
-from framelabel.core.boxes import Box
+from framelabel.core.boxes import Box, grow_box
 from framelabel.core.project import Project, folder_project
 from framelabel.core.propagate import propagate
 from framelabel.core.queues import FrameInfo
@@ -573,6 +573,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.act(m, "Project (classes, sources, zones)...", self.project_settings)
         self.act(m, "Keyboard shortcuts...", self.keyboard_dialog)
         self.act(m, "Performance...", self.performance_dialog)
+        self.act(m, "SAM fit correction...", self.sam_adjust_dialog)
         am = m.addMenu("Arrow keys in the grid")
         self.arrow_mode = str(self.settings.value("arrows", "tiles"))
         if self.arrow_mode not in ARROW_TEXT:
@@ -807,6 +808,17 @@ class MainWindow(WorkflowMixin, QMainWindow):
             return  # a stale load: another session was chosen meanwhile
         self.loader = None
         self.load_progress.setVisible(False)
+        if ws.review.classes_conflict:
+            choice = self.ask_class_conflict(ws)
+            if choice == "cancel":
+                msg = (f"Not opened: the class list differs from the one {ws.session.name} was labeled with "
+                       "(Settings > Project).")
+                self.grid.message = self.canvas.message = msg
+                self.canvas.update()
+                self.status_label.setText(msg)
+                return
+            if choice == "adopt":
+                ws.review.adopt_classes()
         self.ws = ws
         self.grid.message = ""
         if not ws.session.auto_dir.exists():
@@ -1601,6 +1613,9 @@ class MainWindow(WorkflowMixin, QMainWindow):
         if new is None:
             self.status_label.setText("SAM found nothing there.")
             return
+        adjust = self.sam_adjust_px()
+        if adjust:
+            new = grow_box(new, adjust, c.img.shape[1], c.img.shape[0])
         if req["box"] is not None:
             # edits move boxes in place, so the identity survives them; undo / redo / a delete replace or remove it
             i = next((k for k, b in enumerate(c.boxes) if b is req["box"]), -1)
@@ -1614,7 +1629,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
         else:
             new.cls = req["cls"]
             c.add_box(new)
-        self.status_label.setText(f"SAM box {new.w:.0f} x {new.h:.0f} px")
+        self.status_label.setText(f"SAM box {new.w:.0f} x {new.h:.0f} px" + (f" (corrected {adjust:+d} px per side)" if adjust else ""))
 
     @pyqtSlot(int, str)
     def on_sam_failed(self, rid: int, msg: str) -> None:
@@ -1788,6 +1803,44 @@ class MainWindow(WorkflowMixin, QMainWindow):
 
     def open_view(self, mode: str, queue: str) -> None:
         self.set_mode(mode, queue=queue)
+
+    def sam_adjust_px(self) -> int:
+        """The correction (signed pixels per side; positive = bigger) applied to every SAM result."""
+        try:
+            return int(self.settings.value("sam/adjust_px", 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def sam_adjust_dialog(self) -> None:
+        from .dialogs import SamAdjustDialog
+
+        dlg = SamAdjustDialog(self.sam_adjust_px(), self)
+        if dlg.exec():
+            self.settings.setValue("sam/adjust_px", dlg.value())
+            v = dlg.value()
+            self.toast("SAM fit correction: " + (f"{abs(v)} px {'outward' if v > 0 else 'inward'}" if v else "off"))
+
+    def ask_class_conflict(self, ws) -> str:
+        """The project's classes are not the ones this session was labeled with: 'keep' (open, the session's list stays in
+        its file), 'adopt' (rewrite the session's list) or 'cancel' (do not open)."""
+        def show(names):
+            return ", ".join(f"{i} {n}" for i, n in enumerate(names or [])) or "none"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Class list differs")
+        box.setText(f"The classes of this project are not the ones {ws.session.name} was labeled with.")
+        box.setInformativeText(
+            f"Session: {show(ws.review.stored_classes)}\nProject: {show(ws.review.classes)}\n\n"
+            "Labels store the class number, so if the numbers no longer mean the same, existing boxes would change class. "
+            "Fix the list in Settings > Project, or choose:")
+        keep = box.addButton("Open, keep the session's list", QMessageBox.ButtonRole.AcceptRole)
+        adopt = box.addButton("Use the project's list", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton("Do not open", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        return "keep" if clicked is keep else "adopt" if clicked is adopt else "cancel"
 
     def performance_dialog(self) -> None:
         from .dialogs import PerformanceDialog

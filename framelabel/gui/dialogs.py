@@ -606,6 +606,34 @@ class PerformanceDialog(QDialog):
         self.settings.setValue("perf/sam_preload", self.preload.isChecked())
 
 
+class SamAdjustDialog(QDialog):
+    """A fixed correction applied to every box SAM fits: the fitter is often a pixel or two off on every side."""
+
+    def __init__(self, px: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("SAM fit correction")
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("Move every side of a box fitted by SAM by a fixed number of pixels (of the photo), so a\n"
+                             "fitter that is a pixel or two too tight (or too loose) comes out right."))
+        form = QFormLayout()
+        self.px = QSpinBox()
+        self.px.setRange(0, 20)
+        self.px.setSuffix(" px per side")
+        self.px.setValue(abs(px))
+        self.direction = QComboBox()
+        self.direction.addItem("Outward: the box gets bigger", 1)
+        self.direction.addItem("Inward: the box gets smaller", -1)
+        self.direction.setCurrentIndex(1 if px < 0 else 0)
+        form.addRow("Amount", self.px)
+        form.addRow("Direction", self.direction)
+        lay.addLayout(form)
+        lay.addWidget(buttons(self))
+
+    def value(self) -> int:
+        """Signed pixels: positive grows the box, negative shrinks it."""
+        return self.px.value() * int(self.direction.currentData())
+
+
 class ReportDialog(QDialog):
     """Everything that is filtered out of the normal views of a session, counted, with the view that shows it.
     Double-click a row with a view to open it."""

@@ -45,6 +45,18 @@ class Box:
         return replace(self, **changes)
 
 
+def grow_box(b: Box, px: float, w: float, h: float) -> Box:
+    """The box with every side moved `px` pixels out (positive) or in (negative), kept inside the w x h image and at
+    least 2 px wide and high: the correction for a fitter that is a pixel or two off on every side."""
+    n = b.norm()
+    x1, y1, x2, y2 = n.x1 - px, n.y1 - px, n.x2 + px, n.y2 + px
+    if x2 - x1 < 2:
+        x1, x2 = (n.x1 + n.x2) / 2 - 1, (n.x1 + n.x2) / 2 + 1
+    if y2 - y1 < 2:
+        y1, y2 = (n.y1 + n.y2) / 2 - 1, (n.y1 + n.y2) / 2 + 1
+    return replace(n, x1=max(0.0, x1), y1=max(0.0, y1), x2=min(float(w), x2), y2=min(float(h), y2))
+
+
 def in_zones(cx: float, cy: float, zones) -> bool:
     """Is the normalized point inside any normalized (x1, y1, x2, y2) zone."""
     return any(x1 <= cx <= x2 and y1 <= cy <= y2 for x1, y1, x2, y2 in zones)
