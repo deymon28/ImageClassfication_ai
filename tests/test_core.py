@@ -514,3 +514,20 @@ def test_workspace_reads_capture_info_and_summarizes(tmp_path):
                               "ignore_zones": [list(HUD[0])]}, tmp_path)
     ws = Workspace(proj, s, conf=0.2)
     assert ws.capture == {"skipped_by_reason": {"ui": 12}} and "12 ui" in ws.hidden_summary()
+
+
+def test_hide_reviewed_frames_only_touches_the_work_views():
+    from framelabel.core.queues import FrameInfo, build_queue
+
+    def fi(i, status, conf):
+        return FrameInfo(Path(f"{i}.jpg"), status, confs=[conf] if conf else [], prop_h=[0.02] if conf else [],
+                         prop_xyxy=None)
+
+    from pathlib import Path
+
+    idx = [fi(0, None, 0.0), fi(1, "neg", 0.0), fi(2, "skip", 0.0), fi(3, "todo", 0.0), fi(4, None, 0.9), fi(5, "pos", 0.9)]
+    q = lambda name, hide: [f.path.stem for f in build_queue(idx, name, conf=0.3, hide_reviewed=hide)]  # noqa: E731
+    assert q("triage", False) == ["0", "1", "2", "3"] and q("triage", True) == ["0"]  # grid: any decision hides
+    assert q("edit", False) == ["2", "3", "4", "5"] and q("edit", True) == ["3", "4"]  # editor: 'todo' still waits
+    for name in ("all", "neg", "skip", "pos", "todo"):  # views of a status and 'all' are never filtered
+        assert q(name, True) == q(name, False)

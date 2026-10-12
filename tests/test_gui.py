@@ -71,6 +71,7 @@ def test_grid_then_editor_flow(app, project):
     w = MainWindow()
     w.settings.clear()
     open_and_wait(app, w, path)
+    w.hide_check.setChecked(False)  # this flow walks reviewed frames again (the 'hide reviewed' view has its own test)
     w.resize(1200, 800)
     w.show()
     app.processEvents()
@@ -735,3 +736,59 @@ def test_grid_sizes_1x1_2x1_1x2(app, project):
     assert any("1 x 1" in t for t in labels) and any("2 x 1" in t for t in labels) and any("1 x 2" in t for t in labels)
     assert w.settings.value("grid") == "1x2"
     w.close()
+
+
+def test_hide_reviewed_keeps_decided_frames_out_of_the_work_views(app, project):
+    from framelabel.gui.app import MainWindow
+
+    path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    assert w.hide_check.isChecked()  # on by default
+    first, second = w.queue[0].stem, w.queue[1].stem
+    w.grid.toggle(first, "people")
+    w.grid.toggle(second, "skip")
+    assert w.handle_key("Space")  # commit the page: one queued, one skipped, the rest empty
+    assert w.mode == "edit"  # the only page is done: the editor opens with the work that is left
+    assert [f.stem for f in w.queue] == [first, "100006_000", "100007_000"]  # queued + new proposals; no empty / skipped
+    # coming back later (reopening, switching views): the decided frames are gone from the grid, nothing is lost
+    w.set_mode("grid", queue="triage")
+    assert w.queue == []
+    w.hide_check.setChecked(False)
+    assert len(w.queue) == 6 and {f.stem: f.status for f in w.queue}[second] == "skip"
+    w.hide_check.setChecked(True)
+    w.set_mode("grid", queue="skip")
+    assert [f.stem for f in w.queue] == [second]  # a status view always shows its frames
+    w.set_mode("edit", queue="edit")
+    assert [f.stem for f in w.queue] == [first, "100006_000", "100007_000"]  # queued + new proposals; no empty / skipped
+    assert w.setting_bool("hide_reviewed", True) is True  # the choice is remembered in the settings
+    w.hide_check.setChecked(False)
+    assert w.setting_bool("hide_reviewed", True) is False
+    w.close()
+
+
+def test_the_shown_confidence_you_chose_survives_a_restart(app, project):
+    """The threshold decides which frames are in the grid ("model found nothing") and which in the editor list. It used
+    to jump back to the project's show_conf on every start, which moved reviewed-away frames back into the grid."""
+    from framelabel.core.project import Project
+    from framelabel.gui.app import MainWindow
+
+    path, _ = project
+    proj = Project.load(path)
+    proj.prelabel = {"show_conf": 0.2}
+    proj.save()
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    assert abs(w.conf_spin.value() - 0.2) < 1e-9  # first start: the project's recommendation
+    w.conf_spin.setValue(0.1)  # you choose 0.10 and review with it
+    w.settings.sync()
+    w.close()
+    w2 = MainWindow()  # next start: opens the last project by itself
+    wait_until(app, lambda: w2.ws is not None and w2.loader is None)
+    assert abs(w2.conf_spin.value() - 0.1) < 1e-9 and abs(w2.ws.conf - 0.1) < 1e-9  # not back to 0.2
+    assert w2.mode == "grid"
+    w2.update_status()
+    assert "shown conf 0.10" in w2.status_label.text()  # the threshold is visible next to the grid view
+    w2.close()

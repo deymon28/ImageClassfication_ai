@@ -149,6 +149,12 @@ class MainWindow(QMainWindow):
         self.session_box.currentIndexChanged.connect(self.on_session_changed)
         self.queue_box = QComboBox()
         self.queue_box.currentIndexChanged.connect(self.on_queue_changed)
+        self.hide_check = QCheckBox("Hide reviewed frames")
+        self.hide_check.setToolTip("In the 'to do' views (model found nothing, interface, zone hidden, to review, small) "
+                                   "leave out frames that already have a decision (labeled, empty, skipped; the grid views "
+                                   "also leave out frames marked 'has objects'). Views of a status and 'All frames' always show everything.")
+        self.hide_check.setChecked(self.setting_bool("hide_reviewed", True))
+        self.hide_check.toggled.connect(self.on_hide_toggled)
         self.mode_btn = QPushButton("Grid / Editor  (Tab)")
         self.mode_btn.clicked.connect(self.switch_mode)
         self.report_btn = QPushButton("Session report (what is filtered)")
@@ -174,7 +180,7 @@ class MainWindow(QMainWindow):
         # long summaries must wrap, not widen the dock
         self.counts_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
         for w in (QLabel("Session"), self.session_box, QLabel("Queue"), self.queue_box, self.mode_btn, self.report_btn, self.frame_filter,
-                  self.frame_list, self.counts_label):
+                  self.frame_list, self.hide_check, self.counts_label):
             lv.addWidget(w)
         dock = QDockWidget("Frames", self)
         dock.setObjectName("frames")
@@ -407,9 +413,15 @@ class MainWindow(QMainWindow):
         self.grid.class_colors = [QColor(c.color) for c in proj.classes]
         self.grid.ui_threshold = proj.ui_threshold
         self.fill_classes()
-        if "show_conf" in proj.prelabel:  # the project's recommended threshold for its labeler
+        # The shown confidence decides which frames the grid ("model found nothing") and the editor list get, so it must
+        # not change between runs: the value you chose is remembered per project; the project's show_conf (the
+        # recommendation for its labeler) is only the first default.
+        conf = self.saved_conf(proj)
+        if conf is None and "show_conf" in proj.prelabel:
+            conf = float(proj.prelabel["show_conf"])
+        if conf is not None:
             self.conf_spin.blockSignals(True)
-            self.conf_spin.setValue(float(proj.prelabel["show_conf"]))
+            self.conf_spin.setValue(conf)
             self.conf_spin.blockSignals(False)
         self.session_box.blockSignals(True)
         self.session_box.clear()
@@ -551,6 +563,17 @@ class MainWindow(QMainWindow):
             return
         self.set_mode("edit" if self.mode == "grid" else "grid")
 
+    def on_hide_toggled(self, on: bool) -> None:
+        self.settings.setValue("hide_reviewed", on)
+        if self.ws is None:
+            return
+        stem = None
+        if self.mode == "edit" and self.cur_path is not None:
+            stem = self.cur_path.stem
+        elif self.mode == "grid" and self.grid.items:
+            stem = self.grid.page_items()[0].stem
+        self.apply_queue(keep_stem=stem)
+
     def on_queue_changed(self, _i: int) -> None:
         self.apply_queue()
 
@@ -561,7 +584,7 @@ class MainWindow(QMainWindow):
             return
         self.commit_current()
         name = self.queue_box.currentData()
-        self.queue = self.ws.queue(name)
+        self.queue = self.ws.queue(name, hide_reviewed=self.hide_check.isChecked())
         with timed("fill_frame_list", 20):
             self.fill_frame_list()
         pos = next((i for i, f in enumerate(self.queue) if f.stem == keep_stem), None) if keep_stem else None
@@ -797,8 +820,21 @@ class MainWindow(QMainWindow):
         if self.canvas.sel >= 0:
             self.canvas.set_class_of(self.canvas.sel, row)
 
+    def conf_key(self, proj: Project) -> str:
+        ident = str(proj.path or (proj.sources[0] if proj.sources else proj.name)).lower().encode()
+        return f"conf_by_project/{hashlib.sha1(ident).hexdigest()[:12]}"
+
+    def saved_conf(self, proj: Project) -> float | None:
+        try:
+            v = self.settings.value(self.conf_key(proj), None)
+            return None if v in (None, "") else float(v)
+        except (TypeError, ValueError):
+            return None
+
     def on_conf_changed(self, v: float) -> None:
         self.settings.setValue("conf", v)
+        if self.project is not None:
+            self.settings.setValue(self.conf_key(self.project), v)
         if self.ws is not None:
             self.commit_current()
             self.ws.conf = v
@@ -827,8 +863,9 @@ class MainWindow(QMainWindow):
             thr = self.project.ui_threshold
             n_sugg = sum(1 for fi in g.page_items() if g.marks.get(fi.stem) == "skip" and fi.status is None and fi.ui < thr)
             sugg = f" ({n_sugg} pre-marked as interface screens: click to undo)" if n_sugg else ""
-            self.status_label.setText(f"GRID  {self.queue_box.currentText()}: {len(self.queue)} frames, page "
-                                      f"{g.page + 1}/{g.n_pages}  |  marked {n_marked}, skip {n_skip}{sugg}")
+            self.status_label.setText(f"GRID  {self.queue_box.currentText()} (shown conf {self.conf_spin.value():.2f}): "
+                                      f"{len(self.queue)} frames, page {g.page + 1}/{g.n_pages}  |  marked {n_marked}, "
+                                      f"skip {n_skip}{sugg}")
         elif self.queue and self.cur_path is not None:
             fi = self.queue[self.idx]
             st = fi.status or "new"
@@ -1244,7 +1281,8 @@ class MainWindow(QMainWindow):
         ws = self.ws
         sections = [("What the recorder dropped before saving (capture.json)", capture_rows(ws.capture)),
                     ("Model proposals", prelabel_rows(ws.session)),
-                    ("Frames and where to find them", frame_rows(ws.index, ws.conf, self.project.ui_threshold))]
+                    ("Frames and where to find them", frame_rows(ws.index, ws.conf, self.project.ui_threshold,
+                                                          self.hide_check.isChecked()))]
         dlg = ReportDialog(f"Session report: {ws.session.name}", sections, self)
         dlg.open_view.connect(self.open_view)
         dlg.exec()

@@ -123,10 +123,32 @@ def disagreement(fi: FrameInfo, conf: float, iou: float = 0.4) -> float:
     return float((~m.any(1)).sum()) + 0.5 * float((~m.any(0)).sum())
 
 
+GRID_PENDING = ("triage", "ui", "zone")  # grid views of frames still to decide: any status means it was decided
+EDITOR_PENDING = ("edit", "small")        # editor views: labeled / empty / skipped frames are done, 'todo' still waits
+
+
+def hide_reviewed_frames(frames: list[FrameInfo], name: str) -> list[FrameInfo]:
+    """Drop the frames that were already decided from the queues that are meant for work still to do (the views of
+    a status, 'all' and 'disagree' - which is about reviewed frames - are left alone)."""
+    if name in GRID_PENDING:
+        return [f for f in frames if f.status is None]
+    if name in EDITOR_PENDING:
+        return [f for f in frames if f.status in (None, "todo")]
+    return frames
+
+
 def build_queue(index: list[FrameInfo], name: str, conf: float = 0.3, band: tuple[float, float] = (0.15, 0.6),
-                small_h: float = 0.03, ui_threshold: float = 0.3) -> list[FrameInfo]:
-    """Frames of a queue in walking order. `conf` is the proposal confidence shown as a box; `small_h` is a box
-    height as a share of the image height (0.03 = 32 px at 1080p)."""
+                small_h: float = 0.03, ui_threshold: float = 0.3, hide_reviewed: bool = False) -> list[FrameInfo]:
+    """Frames of a queue in walking order; with hide_reviewed the ones that already have a decision are left out of
+    the queues for work still to do (see hide_reviewed_frames)."""
+    frames = _queue(index, name, conf, band, small_h, ui_threshold)
+    return hide_reviewed_frames(frames, name) if hide_reviewed else frames
+
+
+def _queue(index: list[FrameInfo], name: str, conf: float, band: tuple[float, float], small_h: float,
+           ui_threshold: float) -> list[FrameInfo]:
+    """`conf` is the proposal confidence shown as a box; `small_h` is a box height as a share of the image height
+    (0.03 = 32 px at 1080p)."""
     if name == "all":
         return list(index)
     if name == "triage":

@@ -86,10 +86,10 @@ QUEUE_ROWS = [  # (mode, queue, label, note)
 ]
 
 
-def frame_rows(index: list[FrameInfo], conf: float, ui_threshold: float) -> list[ReportRow]:
+def frame_rows(index: list[FrameInfo], conf: float, ui_threshold: float, hide_reviewed: bool = False) -> list[ReportRow]:
     rows = [ReportRow("Frames in the session", len(index), "all frames on disk", mode="edit", queue="all")]
     for mode, queue, label, note in QUEUE_ROWS:
-        n = len(build_queue(index, queue, conf=conf, ui_threshold=ui_threshold))
+        n = len(build_queue(index, queue, conf=conf, ui_threshold=ui_threshold, hide_reviewed=hide_reviewed))
         where = f"{'Grid' if mode == 'grid' else 'Editor'} view \"{queue}\""
         rows.append(ReportRow(label, n, where, note, mode, queue))
     return rows
