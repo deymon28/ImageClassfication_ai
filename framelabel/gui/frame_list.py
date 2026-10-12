@@ -7,7 +7,7 @@ from PyQt6.QtGui import QColor
 
 from framelabel.core.queues import FrameInfo
 
-STATUS_COLORS = {"pos": "#5fd35f", "neg": "#8a8a8a", "skip": "#c08040", "todo": "#ffd000", None: "#ffffff"}
+STATUS_COLORS = {"pos": "#4ade80", "neg": "#8b93a1", "skip": "#e0a458", "todo": "#fbbf24", None: "#e8eaed"}
 
 
 def frame_label(fi: FrameInfo) -> str:

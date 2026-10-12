@@ -361,7 +361,7 @@ def test_frame_list_model_follows_the_queue(app, project):
     assert m.rowCount() == 8
     w.go(2)
     w.do("empty_next")  # the frame becomes empty, the list row follows
-    assert "[empty]" in m.data(m.index(2)) and m.data(m.index(2), Qt.ItemDataRole.ForegroundRole).name() == "#8a8a8a"
+    assert "[empty]" in m.data(m.index(2)) and m.data(m.index(2), Qt.ItemDataRole.ForegroundRole).name() == "#8b93a1"
     assert w.frame_list.currentIndex().row() == 3  # the editor moved on
     w.close()
 
@@ -628,7 +628,7 @@ def test_session_report_window_opens_the_view_of_a_row(app, project, monkeypatch
     w = MainWindow()
     w.settings.clear()
     open_and_wait(app, w, path)
-    assert "50 ui" in w.status_label.text() and "new 8" in w.counts_label.text()
+    assert "50 ui" in w.status_label.text() and "<b>8</b> new" in w.counts_label.text()
     seen = {}
 
     def fake_exec(self):  # the user double-clicks the "weak proposals" row, the report closes, the view opens
@@ -894,3 +894,31 @@ def test_the_shown_confidence_you_chose_survives_a_restart(app, project):
     w2.update_status()
     assert "shown conf 0.10" in w2.status_label.text()  # the threshold is visible next to the grid view
     w2.close()
+
+
+def test_theme_builds_a_style_sheet_with_its_icons(app, tmp_path):
+    from framelabel.gui.theme import T, apply_theme, stylesheet, write_icons
+
+    icons = write_icons()  # FRAMELABEL_HOME points into tmp_path (conftest)
+    assert set(icons) == {"check", "down", "up", "right", "branch_down"}
+    assert all(__import__("pathlib").Path(p).read_text(encoding="utf-8").startswith("<svg") for p in icons.values())
+    css = stylesheet(icons)
+    assert T["accent"] in css and "QPushButton" in css and "{{" not in css and "}}" not in css  # no unformatted braces
+    apply_theme(app)
+    assert app.styleSheet() == css
+    app.setStyleSheet("")  # the other tests run with the plain style
+
+
+def test_grid_and_context_bar_paint_with_the_theme(app, tmp_path):
+    from framelabel.gui.panels import ContextBar
+
+    g = make_grid(app, tmp_path, 2, 2)
+    g.toggle(g.items[0].stem, "people")
+    g.toggle(g.items[1].stem, "skip")
+    g.hover = 2
+    img = g.grab().toImage()  # marked, skipped, hovered and plain tiles all paint without errors
+    assert not img.isNull() and img.width() > 100
+    bar = ContextBar()
+    bar.set_text("A <b> view", "Grid  |  page 1 of 3  |  9 frames", "hint")
+    assert "page 1 of 3" in bar.where.text() and bar.title.text() == "A <b> view"
+    g.shutdown()

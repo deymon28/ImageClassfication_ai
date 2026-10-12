@@ -14,6 +14,8 @@ from framelabel.core.boxes import Box, box_at, corner_at, edge_at
 from framelabel.core.history import History
 from framelabel.core.view import View
 
+from .theme import qc
+
 
 LOUPE_SIDE = 200          # loupe size on screen, px
 LOUPE_MIN, LOUPE_MAX = 1.5, 10.0
@@ -201,9 +203,12 @@ class Canvas(QWidget):
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(24, 24, 24))
+        p.fillRect(self.rect(), qc("bg0"))
         if self.img is None:
-            p.setPen(QColor(160, 160, 160))
+            f = QFont(self.font())
+            f.setPointSizeF(11)
+            p.setFont(f)
+            p.setPen(qc("text2"))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.message or "Open a project or a folder")
             return
         v = self.view

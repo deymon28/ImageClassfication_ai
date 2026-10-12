@@ -10,14 +10,18 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPen
+from PyQt6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QWidget
 
 from framelabel.core.queues import FrameInfo
 from framelabel.core.view import View
 from .canvas import to_qimage
+from .theme import qc
 
-GAP = 6
+GAP = 8
+TILE_RADIUS = 8
+STATUS_TAGS = {"neg": "empty", "pos": "labeled", "skip": "skipped", "todo": "marked"}
+STATUS_TAG_COLORS = {"neg": "neutral", "pos": "ok", "skip": "skip", "todo": "warn"}
 PEEK_HOLD_S = 0.3  # a right button held longer than this is a 'peek': the photo closes when the button is released
 RESIZE_SETTLE_MS = 150  # while the window is being resized the tiles of the old size are stretched instead of reloaded
 
@@ -190,12 +194,16 @@ class Grid(QWidget):
     # ---------------- painting
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(24, 24, 24))
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.fillRect(self.rect(), qc("bg0"))
         if self.preview is not None:
             self.paint_preview(p)
             return
         if not self.items:
-            p.setPen(QColor(160, 160, 160))
+            f = QFont(self.font())
+            f.setPointSizeF(11)
+            p.setFont(f)
+            p.setPen(qc("text2"))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.message or "No frames in this view")
             return
         x0, y0, tw, th = self.layout_now()
@@ -209,10 +217,14 @@ class Grid(QWidget):
         for i, fi in enumerate(self.page_items()):
             x, y = x0 + (i % self.cols) * (tw + GAP), y0 + (i // self.cols) * (th + GAP)
             rect = QRectF(x, y, tw, th)
+            clip = QPainterPath()
+            clip.addRoundedRect(rect, TILE_RADIUS, TILE_RADIUS)
+            p.save()
+            p.setClipPath(clip)
             if tiles is not None:
                 p.drawImage(rect, tiles[i])
             else:
-                p.fillRect(rect, QColor(40, 40, 40))
+                p.fillRect(rect, qc("bg2"))
             if self.show_weak and fi.prop_xyxy is not None:
                 for (bx1, by1, bx2, by2), c in zip(fi.prop_xyxy, fi.confs):
                     col = QColor(255, 200, 0, 90 + int(150 * min(c / 0.3, 1.0)))
@@ -222,43 +234,78 @@ class Grid(QWidget):
                 p.setPen(QPen(QColor(0, 220, 255), 2, Qt.PenStyle.DotLine))
                 for bx1, by1, bx2, by2 in fi.ignored_xyxy:
                     p.drawRect(QRectF(x + bx1 * tw, y + by1 * th, (bx2 - bx1) * tw, (by2 - by1) * th))
-                p.drawText(QRectF(x + 4, y + 4, tw - 8, 18), Qt.AlignmentFlag.AlignLeft, f"ignore zone {fi.ignored_conf:.2f}")
+                self.pill(p, x + 8, y + 8, f"ignore zone {fi.ignored_conf:.2f}", QColor(0, 0, 0, 170), QColor(0, 220, 255), 9)
+            # caption: a dark fade at the bottom with the frame name and its state
+            fade = QLinearGradient(0, y + th - 34, 0, y + th)
+            fade.setColorAt(0, QColor(0, 0, 0, 0))
+            fade.setColorAt(1, QColor(0, 0, 0, 190))
+            p.fillRect(QRectF(x, y + th - 34, tw, 34), fade)
+            p.restore()
             mark = self.marks.get(fi.stem)
             if mark == "people":
-                p.setPen(QPen(QColor(255, 60, 60), 5))
-                p.drawRect(rect.adjusted(3, 3, -3, -3))
-                self.badge(p, x + 8, y + 8, "HAS OBJECTS", QColor(255, 60, 60))
+                p.setPen(QPen(qc("accent"), 3))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(rect.adjusted(1.5, 1.5, -1.5, -1.5), TILE_RADIUS, TILE_RADIUS)
+                self.pill(p, x + 10, y + 10, "HAS OBJECTS", qc("accent"), QColor("#ffffff"))
             elif mark == "skip":
-                p.fillRect(rect, QColor(0, 0, 0, 165))
-                p.setPen(QPen(QColor(160, 160, 160), 3))
-                p.drawRect(rect.adjusted(2, 2, -2, -2))
-                self.badge(p, x + 8, y + 8, "SKIP", QColor(170, 170, 170))
-            if i == self.hover and mark is None:
-                p.setPen(QPen(QColor(255, 255, 255), 2))
-                p.drawRect(rect.adjusted(1, 1, -1, -1))
-            tag = {"neg": "empty", "pos": "labeled", "skip": "skipped", "todo": "queued"}.get(fi.status or "", "")
-            if fi.max_conf > 0:
-                tag += f"  model {fi.max_conf:.2f}"
+                p.save()
+                p.setClipPath(clip)
+                p.fillRect(rect, QColor(10, 11, 14, 175))
+                p.restore()
+                p.setPen(QPen(qc("line2"), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), TILE_RADIUS, TILE_RADIUS)
+                self.pill(p, x + 10, y + 10, "SKIP", qc("bg3"), qc("text2"))
+            elif i == self.hover:
+                p.setPen(QPen(QColor(255, 255, 255, 150), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), TILE_RADIUS, TILE_RADIUS)
+            tag = STATUS_TAGS.get(fi.status or "", "")
+            right = f"model {fi.max_conf:.2f}" if fi.max_conf > 0 else ""
             if fi.ui < self.ui_threshold:
-                tag += "  UI?"
-            text = f"{fi.stem}  {tag}"
-            tw_txt = p.fontMetrics().horizontalAdvance(text) + 8
-            p.fillRect(QRectF(x, y + th - 20, min(tw_txt, tw), 20), QColor(0, 0, 0, 150))
-            p.setPen(QColor(190, 255, 190) if fi.status else QColor(255, 255, 255))
-            p.drawText(QRectF(x + 4, y + th - 20, tw - 8, 20), Qt.AlignmentFlag.AlignVCenter, text)
+                right += "  UI?"
+            cap = QRectF(x + 10, y + th - 24, tw - 20, 20)
+            p.setPen(QColor(255, 255, 255, 235))
+            p.drawText(cap, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, fi.stem)
+            if tag:
+                off = p.fontMetrics().horizontalAdvance(fi.stem) + 10
+                p.setPen(qc(STATUS_TAG_COLORS[fi.status]))
+                p.drawText(QRectF(cap.x() + off, cap.y(), cap.width() - off, cap.height()),
+                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, tag)
+            p.setPen(QColor(255, 255, 255, 170))
+            p.drawText(cap, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, right.strip())
+
+    def pill(self, p: QPainter, x: float, y: float, text: str, bg: QColor, fg: QColor, size: float = 9.5) -> None:
+        """A rounded label ('HAS OBJECTS', 'SKIP') on a tile or on the photo."""
+        p.save()
+        f = QFont(self.font())
+        f.setPointSizeF(size)
+        f.setBold(True)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
+        p.setFont(f)
+        w = p.fontMetrics().horizontalAdvance(text) + 18
+        h = p.fontMetrics().height() + 8
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(QRectF(x, y, w, h), h / 2, h / 2)
+        p.setPen(fg)
+        p.drawText(QRectF(x, y, w, h), Qt.AlignmentFlag.AlignCenter, text)
+        p.restore()
 
     def badge(self, p: QPainter, x: float, y: float, text: str, color: QColor) -> None:
+        """The caption of the full-size preview."""
+        p.save()
         f = QFont(self.font())
-        f.setPointSizeF(11)
-        f.setBold(True)
+        f.setPointSizeF(10)
         p.setFont(f)
-        w = p.fontMetrics().horizontalAdvance(text) + 12
-        p.fillRect(QRectF(x, y, w, 24), QColor(0, 0, 0, 170))
+        w = p.fontMetrics().horizontalAdvance(text) + 24
+        h = p.fontMetrics().height() + 12
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(10, 11, 14, 190))
+        p.drawRoundedRect(QRectF(x, y, w, h), 8, 8)
         p.setPen(color)
-        p.drawText(QRectF(x + 6, y, w, 24), Qt.AlignmentFlag.AlignVCenter, text)
-        f.setPointSizeF(9)
-        f.setBold(False)
-        p.setFont(f)
+        p.drawText(QRectF(x + 12, y, w, h), Qt.AlignmentFlag.AlignVCenter, text)
+        p.restore()
 
     def paint_preview(self, p: QPainter) -> None:
         v = self.preview_view
@@ -279,16 +326,16 @@ class Grid(QWidget):
                 p.drawRect(QRectF(QPointF(*v.to_widget(bx1 * v.iw, by1 * v.ih)), QPointF(*v.to_widget(bx2 * v.iw, by2 * v.ih))))
         kind = self.marks.get(fi.stem, "")
         if kind == "people":
-            p.setPen(QPen(QColor(255, 60, 60), 6))
-            p.drawRect(self.rect().adjusted(3, 3, -3, -3))
+            p.setPen(QPen(qc("accent"), 5))
+            p.drawRect(self.rect().adjusted(2, 2, -2, -2))
         elif kind == "skip":
-            p.fillRect(self.rect(), QColor(0, 0, 0, 120))
-            p.setPen(QPen(QColor(160, 160, 160), 6))
-            p.drawRect(self.rect().adjusted(3, 3, -3, -3))
+            p.fillRect(self.rect(), QColor(10, 11, 14, 130))
+            p.setPen(QPen(qc("line2"), 5))
+            p.drawRect(self.rect().adjusted(2, 2, -2, -2))
         mark = {"people": "HAS OBJECTS", "skip": "SKIP"}.get(kind, "not marked")
         hint = ("click: has objects | Ctrl+click or MMB: skip | wheel: zoom | drag: pan | Z: fit" if self.sticky
                 else "click: toggle 'has objects' | RMB / Esc: back")
-        self.badge(p, 10, 10, f"{fi.stem}  [{mark}]  zoom {v.zoom:.1f}x   {hint}", QColor(255, 255, 255))
+        self.badge(p, 10, 10, f"{fi.stem}  [{mark}]  zoom {v.zoom:.1f}x   {hint}", qc("text"))
 
     # ---------------- preview
     def open_preview(self, fi: FrameInfo) -> None:

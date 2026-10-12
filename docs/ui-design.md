@@ -59,3 +59,13 @@ decision").
   dialog).
 * Annotation-tool practice (Supervisely labeling queues, annotation-project guidelines): "take the next item" with one
   action, keyboard shortcuts for speed with a visible, customizable list, a way to flag unusable items (skip).
+
+## Look
+
+One dark theme in `framelabel/gui/theme.py`: design tokens (`T`: three background levels, text levels, one blue accent,
+status colours), the palette and a single style sheet; the painted canvas and grid use the same tokens. Widgets are
+styled by class, by object name (`#contextBar`, `#segTrack`, `#toast`) or by a `role` / `primary` property, never
+inline. Rules: the accent colour means "this is where you are / what you chose" (the selected view, the active mode,
+the main action, tiles marked *has objects*); status colours are used only for statuses (labeled green, marked amber,
+skipped orange, empty grey); one radius family (6-10 px), thin borders, no shadows. Icons the style sheet needs
+(checkmark, chevrons) are small SVGs written to the per-user data folder at start.

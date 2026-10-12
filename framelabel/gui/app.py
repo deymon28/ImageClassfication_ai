@@ -13,7 +13,7 @@ from pathlib import Path
 
 import cv2
 from PyQt6.QtCore import QEvent, QObject, QSettings, QSortFilterProxyModel, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPainter, QPixmap
 from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
                              QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListView,
                              QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
@@ -33,7 +33,8 @@ from .canvas import Canvas, to_qimage
 from .frame_list import FrameListModel
 from .grid import Grid
 from .keys import ACTION_INFO, Keymap, key_name
-from .panels import Central, ContextBar, ModeSwitch, ViewTree, grid_size_text, note_label, section_label, GRID_SIZES
+from .theme import T, apply_theme
+from .panels import Central, ContextBar, ModeSwitch, SwitchBox, ViewTree, grid_size_text, note_label, section_label, GRID_SIZES
 from .process_job import ProcessJob
 from .workers import Job, start_job, stop_jobs
 
@@ -50,8 +51,15 @@ def read_frame(path: Path):
 
 
 def color_icon(color: str, size: int = 12) -> QIcon:
+    """A round colour dot (class colours in the lists)."""
     pm = QPixmap(size, size)
-    pm.fill(QColor(color))
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    p.drawEllipse(1, 1, size - 2, size - 2)
+    p.end()
     return QIcon(pm)
 
 
@@ -188,13 +196,13 @@ class MainWindow(QMainWindow):
         row.addWidget(self.report_btn)
         lv.addLayout(row)
         self.done_bar = QProgressBar()
-        self.done_bar.setFixedHeight(16)
         self.done_bar.setToolTip("Frames with a decision (labeled, empty or skipped) out of all frames of the session")
         self.counts_label = QLabel()
         self.counts_label.setWordWrap(True)
         # long summaries must wrap, not widen the dock
         self.counts_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
-        self.counts_label.setStyleSheet("color: #9a9a9a")
+        self.counts_label.setProperty("role", "muted")
+        self.counts_label.setTextFormat(Qt.TextFormat.RichText)
         lv.addWidget(self.done_bar)
         lv.addWidget(self.counts_label)
         self.mode_switch = ModeSwitch()
@@ -223,17 +231,25 @@ class MainWindow(QMainWindow):
         lw.setContentsMargins(0, 0, 0, 0)
         for w in (self.frames_title, self.frame_filter, self.frame_list):
             lw.addWidget(w)
-        split = QSplitter(Qt.Orientation.Vertical)
+        split = self.left_split = QSplitter(Qt.Orientation.Vertical)
+        self.view_tree.expanded.connect(lambda _i: self.fit_view_tree())
+        self.view_tree.collapsed.connect(lambda _i: self.fit_view_tree())
         split.addWidget(self.view_tree)
         split.addWidget(lower)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
         split.setChildrenCollapsible(False)
         lv.addWidget(split, 1)
         dock = QDockWidget("Frames", self)
         dock.setObjectName("frames")
         dock.setWidget(left)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
+
+    def fit_view_tree(self) -> None:
+        """Give the view list the height of all its rows (no scrolling), the rest of the panel to the frame list."""
+        total = sum(self.left_split.sizes()) or self.left_split.height()
+        h = min(self.view_tree.sizeHint().height(), max(total - 160, 120))
+        self.left_split.setSizes([h, max(total - h, 120)])
 
     def build_frame_dock(self) -> None:
         """Right, top: what belongs to the thing on screen - the boxes of the frame, or the marks of the grid page."""
@@ -292,6 +308,8 @@ class MainWindow(QMainWindow):
         row = col = 0
         for action in actions:
             b = QPushButton()
+            b.setProperty("primary", action == wide)  # the main action of the mode is the coloured one
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # the keys keep working on the canvas / grid
             b.clicked.connect(lambda _=False, a=action: self.do(a))
             self.action_buttons[action] = b
@@ -312,7 +330,7 @@ class MainWindow(QMainWindow):
         tv.setContentsMargins(6, 6, 6, 6)
         tv.addWidget(section_label("Actions"))
         self.action_buttons: dict[str, QPushButton] = {}
-        self.action_pages = QStackedWidget()
+        self.action_pages = SwitchBox()
         self.action_pages.addWidget(self.action_page(("commit_page", "prev_page", "next_page", "grid_view", "reload"),
                                                      "commit_page"))
         self.action_pages.addWidget(self.action_page(("accept_next", "empty_next", "skip_next", "prev", "next", "undo",
@@ -334,6 +352,7 @@ class MainWindow(QMainWindow):
         for v in CONF_PRESETS:
             b = QPushButton(f"{v:.2f}")
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            b.setProperty("chip", True)
             b.setToolTip(f"Show proposals from confidence {v:.2f}")
             b.clicked.connect(lambda _=False, x=v: self.conf_spin.setValue(x))
             row.addWidget(b)
@@ -566,6 +585,7 @@ class MainWindow(QMainWindow):
         self.grid.ui_threshold = proj.ui_threshold
         self.fill_classes()
         self.view_tree.set_views(all_views(proj.class_names), set(json.loads(self.settings.value("tree_collapsed", "[]") or "[]")))
+        QTimer.singleShot(0, self.fit_view_tree)
         # The shown confidence decides which frames the grid ("model found nothing") and the editor list get, so it must
         # not change between runs: the value you chose is remembered per project; the project's show_conf (the
         # recommendation for its labeler) is only the first default.
@@ -1066,6 +1086,13 @@ class MainWindow(QMainWindow):
         self.grid.clear_cache()
         self.grid.set_page(first // self.grid.per_page)
 
+    @staticmethod
+    def stat_row(n: int, what: str, then: str, color: str) -> str:
+        """One line of the page summary: a big number, what it counts and what committing does with it."""
+        return (f"<table cellspacing='0' cellpadding='3'><tr><td width='46' style='font-size:20pt; font-weight:600; "
+                f"color:{color}'>{n}</td><td><span style='color:{color}'><b>{what}</b></span><br>"
+                f"<span style='color:{T['text3']}'>&rarr; {then}</span></td></tr></table>")
+
     STATUS_WORDS = {"pos": "labeled", "neg": "empty", "skip": "skipped", "todo": "marked", None: "new"}
 
     def update_status(self) -> None:
@@ -1081,8 +1108,9 @@ class MainWindow(QMainWindow):
         self.done_bar.setRange(0, max(n, 1))
         self.done_bar.setValue(decided)
         self.done_bar.setFormat(f"{decided} of {n} decided  ({100 * decided // max(n, 1)}%)")
-        self.counts_label.setText(f"new {c['new']}  |  marked {c['marked']}  |  labeled {c['labeled']}  |  "
-                                  f"empty {c['empty']}  |  skipped {c['skipped']}")
+        dots = (("new", "text"), ("marked", "warn"), ("labeled", "ok"), ("empty", "neutral"), ("skipped", "skip"))
+        self.counts_label.setText("&nbsp;&nbsp;".join(f"<span style='color:{T[col]}'>&#9679;</span> <b>{c[k]}</b> {k}"
+                                                   for k, col in dots))
         vd = self.view_def()
         if self.mode == "grid":
             g = self.grid
@@ -1098,10 +1126,10 @@ class MainWindow(QMainWindow):
                                       f"{len(self.queue)} frames, page {g.page + 1}/{g.n_pages}  |  marked {n_marked}, "
                                       f"skip {n_skip}{sugg}")
             self.page_label.setText(
-                f"<span style='color:#ff6060'><b>{n_marked}</b> has objects</span> &rarr; the editor<br>"
-                f"<span style='color:#b0b0b0'><b>{n_skip}</b> skip</span> &rarr; set aside<br>"
-                f"<b>{max(n_tiles - n_marked - n_skip, 0)}</b> unmarked &rarr; saved as empty"
-                + (f"<br><small>{sugg.strip(' ()')}</small>" if n_sugg else ""))
+                self.stat_row(n_marked, "has objects", "go to the editor", T["accent_hi"])
+                + self.stat_row(n_skip, "skip", "set aside, not exported", T["text2"])
+                + self.stat_row(max(n_tiles - n_marked - n_skip, 0), "unmarked", "saved as empty", T["text"])
+                + (f"<p style='color:{T['text3']}'>{sugg.strip(' ()')}</p>" if n_sugg else ""))
         elif self.queue and self.cur_path is not None:
             fi = self.queue[self.idx]
             st = self.STATUS_WORDS.get(fi.status, "new")
@@ -1633,18 +1661,7 @@ def run_app(target: Path | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     install_excepthooks(app)
     app.setApplicationName("framelabel")
-    app.setStyle("Fusion")
-    from PyQt6.QtGui import QPalette
-
-    pal = QPalette()
-    for role, color in ((QPalette.ColorRole.Window, "#2b2b2b"), (QPalette.ColorRole.WindowText, "#e6e6e6"),
-                        (QPalette.ColorRole.Base, "#1f1f1f"), (QPalette.ColorRole.AlternateBase, "#262626"),
-                        (QPalette.ColorRole.Text, "#e6e6e6"), (QPalette.ColorRole.Button, "#353535"),
-                        (QPalette.ColorRole.ButtonText, "#e6e6e6"), (QPalette.ColorRole.Highlight, "#3d6fb4"),
-                        (QPalette.ColorRole.HighlightedText, "#ffffff"), (QPalette.ColorRole.ToolTipBase, "#2b2b2b"),
-                        (QPalette.ColorRole.ToolTipText, "#e6e6e6")):
-        pal.setColor(role, QColor(color))
-    app.setPalette(pal)
+    apply_theme(app)
     w = MainWindow(target)
     w.log_dir = log_dir
     w.show()

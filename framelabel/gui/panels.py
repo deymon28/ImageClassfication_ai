@@ -2,15 +2,18 @@
 that always says where you are, and the toast that confirms what an action did."""
 from __future__ import annotations
 
-from PyQt6.QtCore import QTimer, Qt, pyqtSignal
+from PyQt6.QtCore import QSize, QTimer, Qt, pyqtSignal
+import html
+
 from PyQt6.QtGui import QBrush, QColor, QFont
 from PyQt6.QtWidgets import (QAbstractItemView, QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QPushButton,
                              QSizePolicy, QStackedWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from framelabel.core.views import GROUPS, ViewDef
+from .theme import T, qc
 
 GRID_SIZES = ((1, 1), (2, 1), (1, 2), (2, 2), (3, 3), (4, 3), (4, 4), (5, 4))
-DIM = QColor("#8a8a8a")
+DIM = qc("text3")
 
 
 def grid_size_text(cols: int, rows: int) -> str:
@@ -42,6 +45,7 @@ class ViewTree(QTreeWidget):
         self.itemClicked.connect(self.on_clicked)
         self.currentItemChanged.connect(self.on_current)
         self.quiet = False
+        self.counts: dict[str, int] = {}
 
     def set_views(self, defs: list[ViewDef], collapsed: set[str] = frozenset()) -> None:
         self.quiet = True
@@ -49,15 +53,17 @@ class ViewTree(QTreeWidget):
         self.items.clear()
         self.groups.clear()
         self.defs = {d.key: d for d in defs}
-        bold = QFont(self.font())
-        bold.setBold(True)
+        head = QFont(self.font())
+        head.setBold(True)
+        head.setPointSizeF(max(head.pointSizeF() * 0.85, 7))
+        head.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
         for gkey, gname in GROUPS:
             members = [d for d in defs if d.group == gkey]
             if not members:
                 continue
             g = QTreeWidgetItem([gname.upper(), ""])
             g.setFlags(Qt.ItemFlag.ItemIsEnabled)  # a heading: neither selectable nor a view
-            g.setFont(0, bold)
+            g.setFont(0, head)
             g.setForeground(0, QBrush(DIM))
             self.addTopLevelItem(g)
             self.groups[gkey] = g
@@ -71,16 +77,35 @@ class ViewTree(QTreeWidget):
             g.setExpanded(gkey not in collapsed)
         self.quiet = False
 
+    def sizeHint(self):
+        """Tall enough for every row, so the list needs no scrolling while the groups are open (the frame list below
+        takes the rest of the panel)."""
+        rows = sum(1 + (g.childCount() if g.isExpanded() else 0) for g in self.groups.values())
+        h = self.sizeHintForRow(0) if self.groups else 24
+        return QSize(220, max(h, 20) * rows + 8)
+
     def collapsed_groups(self) -> set[str]:
         return {k for k, g in self.groups.items() if not g.isExpanded()}
 
     def set_counts(self, counts: dict[str, int]) -> None:
+        self.counts = dict(counts)
         for key, it in self.items.items():
             n = counts.get(key)
             it.setText(1, "" if n is None else f"{n:,}".replace(",", " "))
-            dim = n == 0
+        self.paint_text()
+
+    def paint_text(self) -> None:
+        """Counts muted, empty views dimmed, the selected row white (an explicit colour beats the style sheet)."""
+        cur = self.currentItem()
+        for key, it in self.items.items():
+            n = self.counts.get(key)
             for col in (0, 1):
-                it.setForeground(col, QBrush(DIM) if dim else QBrush())
+                if it is cur:
+                    it.setForeground(col, QBrush(QColor("#ffffff")))
+                elif n == 0:
+                    it.setForeground(col, QBrush(qc("text3")))
+                else:
+                    it.setForeground(col, QBrush(qc("text") if col == 0 else qc("text2")))
 
     def select(self, key: str) -> None:
         it = self.items.get(key)
@@ -91,6 +116,7 @@ class ViewTree(QTreeWidget):
         it.parent().setExpanded(True)  # the current view is never hidden inside a collapsed group
         self.scrollToItem(it)
         self.quiet = False
+        self.paint_text()
 
     def current_key(self) -> str | None:
         it = self.currentItem()
@@ -105,9 +131,41 @@ class ViewTree(QTreeWidget):
             self.view_chosen.emit(key)
 
     def on_current(self, it, _prev) -> None:
+        self.paint_text()
         key = it.data(0, Qt.ItemDataRole.UserRole) if it is not None else None
         if key and not self.quiet:  # arrow keys in the list
             self.view_chosen.emit(key)
+
+
+class SwitchBox(QWidget):
+    """Like a QStackedWidget, but only the current page takes space (a stack is as big as its biggest page)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.box = QVBoxLayout(self)
+        self.box.setContentsMargins(0, 0, 0, 0)
+        self.box.setSpacing(0)
+        self.pages: list[QWidget] = []
+        self.index = -1
+
+    def addWidget(self, w: QWidget) -> int:
+        self.box.addWidget(w, 0)
+        w.setVisible(False)
+        self.pages.append(w)
+        if self.index < 0:
+            self.setCurrentIndex(0)
+        return len(self.pages) - 1
+
+    def widget(self, i: int) -> QWidget:
+        return self.pages[i]
+
+    def currentIndex(self) -> int:
+        return self.index
+
+    def setCurrentIndex(self, i: int) -> None:
+        self.index = i
+        for k, w in enumerate(self.pages):
+            w.setVisible(k == i)
 
 
 class ModeSwitch(QWidget):
@@ -115,17 +173,13 @@ class ModeSwitch(QWidget):
 
     mode_chosen = pyqtSignal(str)
 
-    STYLE = """
-    QPushButton { padding: 6px 14px; border: 1px solid #555; background: #353535; }
-    QPushButton:hover { background: #404040; }
-    QPushButton:checked { background: #3d6fb4; border-color: #3d6fb4; color: white; font-weight: bold; }
-    """
-
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("segTrack")  # styled in theme.py: a track with one coloured segment
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(0)
+        lay.setContentsMargins(3, 3, 3, 3)
+        lay.setSpacing(3)
         self.group = QButtonGroup(self)
         self.buttons: dict[str, QPushButton] = {}
         for mode, text, tip in (("grid", "Grid", "Many frames at once: triage by clicking tiles"),
@@ -133,8 +187,8 @@ class ModeSwitch(QWidget):
             b = QPushButton(text)
             b.setCheckable(True)
             b.setToolTip(tip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)  # keys stay with the canvas / grid
-            b.setStyleSheet(self.STYLE)
             b.clicked.connect(lambda _=False, m=mode: self.mode_chosen.emit(m))
             self.group.addButton(b)
             self.buttons[mode] = b
@@ -157,33 +211,32 @@ class ContextBar(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setStyleSheet("ContextBar { background: #232323; border-bottom: 1px solid #3a3a3a; }")
+        self.setObjectName("contextBar")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 6)
-        lay.setSpacing(2)
+        lay.setContentsMargins(16, 10, 16, 10)
+        lay.setSpacing(3)
         top = QHBoxLayout()
         self.title = QLabel()
-        f = QFont(self.font())
-        f.setPointSizeF(f.pointSizeF() * 1.3)
-        f.setBold(True)
-        self.title.setFont(f)
+        self.title.setProperty("role", "title")
         self.where = QLabel()
-        self.where.setStyleSheet("color: #8ab4f8")
+        self.where.setTextFormat(Qt.TextFormat.RichText)
         self.tiles_label = QLabel("Tiles")
+        self.tiles_label.setProperty("role", "muted")
         self.tiles = QComboBox()
         for c, r in GRID_SIZES:
             self.tiles.addItem(grid_size_text(c, r), f"{c}x{r}")
         self.tiles.setToolTip("How many frames the grid shows per page")
         self.tiles.activated.connect(lambda i: self.grid_size_chosen.emit(*map(int, self.tiles.itemData(i).split("x"))))
         top.addWidget(self.title)
-        top.addSpacing(12)
+        top.addSpacing(14)
         top.addWidget(self.where, 1)
         top.addWidget(self.tiles_label)
         top.addWidget(self.tiles)
         lay.addLayout(top)
         self.hint = QLabel()
         self.hint.setWordWrap(True)
-        self.hint.setStyleSheet("color: #9a9a9a")
+        self.hint.setProperty("role", "muted")
         lay.addWidget(self.hint)
 
     def set_grid_size(self, cols: int, rows: int) -> None:
@@ -197,7 +250,9 @@ class ContextBar(QFrame):
 
     def set_text(self, title: str, where: str, hint: str) -> None:
         self.title.setText(title)
-        self.where.setText(where)
+        head, *rest = [html.escape(p) for p in where.split("  |  ")]
+        sep = f" <span style='color:{T['text3']}'>&nbsp;/&nbsp;</span> "
+        self.where.setText(f"<b style='color:{T['accent_hi']}'>{head}</b>" + (sep + sep.join(rest) if rest else ""))
         self.hint.setText(hint)
 
 
@@ -207,8 +262,7 @@ class Toast(QLabel):
     def __init__(self, parent: QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setStyleSheet("background: rgba(20, 20, 20, 215); color: #ffffff; border: 1px solid #555; "
-                           "border-radius: 6px; padding: 8px 16px; font-size: 14px;")
+        self.setObjectName("toast")
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.hide)
@@ -247,17 +301,16 @@ class Central(QWidget):
 
 def section_label(text: str) -> QLabel:
     lab = QLabel(text.upper())
+    lab.setProperty("role", "section")
     f = QFont(lab.font())
-    f.setBold(True)
-    f.setPointSizeF(max(f.pointSizeF() * 0.85, 7))
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
     lab.setFont(f)
-    lab.setStyleSheet("color: #8a8a8a; margin-top: 6px")
     return lab
 
 
 def note_label(text: str) -> QLabel:
     lab = QLabel(text)
     lab.setWordWrap(True)
-    lab.setStyleSheet("color: #8a8a8a")
+    lab.setProperty("role", "note")
     lab.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
     return lab
