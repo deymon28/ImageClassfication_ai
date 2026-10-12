@@ -119,3 +119,42 @@ def test_prelabel_tta_flag_can_be_turned_off():
     assert p.parse_args(["prelabel", "x"]).tta is None  # not given: the project's default decides
     assert p.parse_args(["prelabel", "x", "--tta"]).tta is True
     assert p.parse_args(["prelabel", "x", "--no-tta"]).tta is False
+
+
+def test_prelabel_reports_what_it_dropped_and_hid(tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
+
+    import framelabel.ml.predict as pr
+    from framelabel.core.session import Session
+
+    s = tmp_path / "session_20261008_100000"
+    (s / "frames").mkdir(parents=True)
+    for i in range(3):
+        cv2.imwrite(str(s / "frames" / f"10000{i}_000.jpg"), np.zeros((100, 200, 3), np.uint8))
+
+    class FakePredictor:
+        def __init__(self, cfg):
+            self.dropped = {"car": 2}
+
+        def predict(self, images):
+            hud = (np.array([[2.0, 80.0, 10.0, 90.0]]), np.array([0.9]), np.array([0]))    # inside the zone (cx 0.03)
+            none = (np.zeros((0, 4)), np.zeros(0), np.zeros(0, int))
+            real = (np.array([[100.0, 20.0, 120.0, 70.0]]), np.array([0.8]), np.array([0]))
+            return [none, hud, real][:len(images)]
+
+    monkeypatch.setattr(pr, "Predictor", FakePredictor)
+    cfg = pr.PredictConfig(models=[], batch=4)
+    stats = pr.prelabel_sessions([Session.open(s)], cfg, ignore_zones=[(0.0, 0.75, 0.07, 0.92)])
+    assert (stats["frames"], stats["with_proposals"], stats["without_proposals"], stats["only_in_ignore_zone"]) == (3, 1, 1, 1)
+    assert stats["dropped_classes"] == {"car": 2}
+    import json
+
+    meta = json.loads((s / "labels_auto" / "_meta.json").read_text())
+    assert meta["run"]["only_in_ignore_zone"] == 1 and meta["run"]["dropped_classes"] == {"car": 2}
+
+
+def test_dropped_names_uses_model_names():
+    from framelabel.ml.predict import dropped_names
+
+    assert dropped_names({0: "person", 2: "car"}, np.array([2, 7, 2])) == ["car", "7", "car"]

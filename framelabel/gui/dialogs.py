@@ -4,13 +4,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import QProcess, Qt
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import QProcess, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
                              QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
                              QPlainTextEdit, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout)
 
 from framelabel.core.project import PALETTE, ClassDef, Project
+from framelabel.core.report import ReportRow
 from framelabel.core.session import Session
 from framelabel.ml.models import scan_models
 from .keys import DEFAULT_KEYMAP, Keymap
@@ -530,3 +531,80 @@ class PerformanceDialog(QDialog):
         self.settings.setValue("perf/io_threads", self.io.value())
         self.settings.setValue("perf/prefetch", self.prefetch.value())
         self.settings.setValue("perf/sam_preload", self.preload.isChecked())
+
+
+class ReportDialog(QDialog):
+    """Everything that is filtered out of the normal views of a session, counted, with the view that shows it.
+    Double-click a row with a view to open it."""
+
+    open_view = pyqtSignal(str, str)  # mode ("grid" / "edit"), queue key
+
+    def __init__(self, title: str, sections: list[tuple[str, list[ReportRow]]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(1100, 720)
+        self.sections = sections
+        lay = QVBoxLayout(self)
+        lay.addWidget(QLabel("What is filtered out of the normal views, and where to look at it. Double-click a row that "
+                             "has a view to open it."))
+        n = sum(len(rows) + 1 for _, rows in sections)
+        self.table = QTableWidget(n, 4)
+        self.table.setHorizontalHeaderLabels(["", "Frames", "Where / what to do", "Notes"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setWordWrap(True)
+        self.views: dict[int, tuple[str, str]] = {}
+        r = 0
+        for head, rows in sections:
+            item = QTableWidgetItem(head)
+            f = QFont(item.font())
+            f.setBold(True)
+            item.setFont(f)
+            self.table.setItem(r, 0, item)
+            self.table.setSpan(r, 0, 1, 4)
+            r += 1
+            for row in rows:
+                self.table.setItem(r, 0, QTableWidgetItem(row.label))
+                cnt = QTableWidgetItem("" if row.count is None else str(row.count))
+                cnt.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.table.setItem(r, 1, cnt)
+                self.table.setItem(r, 2, QTableWidgetItem(row.where))
+                self.table.setItem(r, 3, QTableWidgetItem(row.note))
+                if row.mode and row.queue:
+                    self.views[r] = (row.mode, row.queue)
+                r += 1
+        self.table.setColumnWidth(0, 430)
+        self.table.setColumnWidth(1, 70)
+        self.table.setColumnWidth(2, 250)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.resizeRowsToContents()
+        self.table.cellDoubleClicked.connect(self.on_double_click)
+        lay.addWidget(self.table)
+        row = QHBoxLayout()
+        copy = QPushButton("Copy as text")
+        copy.clicked.connect(self.copy_text)
+        row.addWidget(copy)
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        lay.addLayout(row)
+
+    def on_double_click(self, r: int, _c: int) -> None:
+        if r in self.views:
+            self.open_view.emit(*self.views[r])
+            self.accept()
+
+    def as_text(self) -> str:
+        lines = []
+        for head, rows in self.sections:
+            lines.append(head)
+            lines += [f"  {row.label}: {'' if row.count is None else row.count}  [{row.where}] {row.note}".rstrip()
+                      for row in rows]
+        return "\n".join(lines)
+
+    def copy_text(self) -> None:
+        from PyQt6.QtWidgets import QApplication
+
+        QApplication.clipboard().setText(self.as_text())

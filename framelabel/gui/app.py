@@ -16,7 +16,7 @@ from PyQt6.QtCore import QEvent, QObject, QSettings, QSortFilterProxyModel, Qt, 
 from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox,
                              QFileDialog, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QMainWindow,
-                             QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QStackedWidget, QTableWidget,
+                             QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSizePolicy, QStackedWidget, QTableWidget,
                              QVBoxLayout, QWidget)
 
 from framelabel.core.boxes import Box
@@ -40,7 +40,9 @@ EDIT_QUEUES = [("edit", "To review (proposals / marked)"), ("uncertain", "Uncert
                ("small", "Small (far) objects first"), ("disagree", "Model disagrees with labels"),
                ("unreviewed", "Not reviewed"), ("todo", "Marked in grid"), ("pos", "Labeled"), ("neg", "Empty"),
                ("skip", "Skipped"), ("all", "All frames")]
-GRID_QUEUES = [("triage", "Model found nothing"), ("ui", "Suspected interface screens"), ("neg", "Saved as empty"),
+GRID_QUEUES = [("triage", "Model found nothing"), ("ui", "Suspected interface screens"),
+               ("zone", "Proposals hidden by ignore zones"), ("weak", "Weak proposals only (below shown conf)"),
+               ("neg", "Saved as empty"),
                ("skip", "Skipped"), ("unreviewed", "Not reviewed"), ("all", "All frames")]
 
 
@@ -142,11 +144,17 @@ class MainWindow(QMainWindow):
         lv = QVBoxLayout(left)
         lv.setContentsMargins(4, 4, 4, 4)
         self.session_box = QComboBox()
+        self.session_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.session_box.setMinimumContentsLength(24)
         self.session_box.currentIndexChanged.connect(self.on_session_changed)
         self.queue_box = QComboBox()
         self.queue_box.currentIndexChanged.connect(self.on_queue_changed)
         self.mode_btn = QPushButton("Grid / Editor  (Tab)")
         self.mode_btn.clicked.connect(self.switch_mode)
+        self.report_btn = QPushButton("Session report (what is filtered)")
+        self.report_btn.setToolTip("Counts of everything hidden from the normal views (recorder, interface screens, ignore "
+                                   "zones, weak proposals, dropped classes) with a view for each")
+        self.report_btn.clicked.connect(self.session_report)
         self.frame_model = FrameListModel(self)
         self.frame_proxy = QSortFilterProxyModel(self)  # the filter box above the list
         self.frame_proxy.setSourceModel(self.frame_model)
@@ -163,7 +171,9 @@ class MainWindow(QMainWindow):
         self.frame_list.clicked.connect(self.on_frame_clicked)
         self.counts_label = QLabel()
         self.counts_label.setWordWrap(True)
-        for w in (QLabel("Session"), self.session_box, QLabel("Queue"), self.queue_box, self.mode_btn, self.frame_filter,
+        # long summaries must wrap, not widen the dock
+        self.counts_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        for w in (QLabel("Session"), self.session_box, QLabel("Queue"), self.queue_box, self.mode_btn, self.report_btn, self.frame_filter,
                   self.frame_list, self.counts_label):
             lv.addWidget(w)
         dock = QDockWidget("Frames", self)
@@ -290,6 +300,7 @@ class MainWindow(QMainWindow):
         self.act(m, "Grid / editor", lambda: self.do("switch_mode"), "switch_mode")
         self.act(m, "Next grid view", lambda: self.do("grid_view"), "grid_view")
         self.act(m, "Fit image", lambda: self.do("fit_view"), "fit_view")
+        self.act(m, "Session report: what is filtered out...", self.session_report)
         self.act(m, "Reload proposals and new frames", lambda: self.do("reload"), "reload")
         self.act(m, "Show / hide boxes", lambda: self.do("toggle_boxes"), "toggle_boxes")
         self.act(m, "Loupe", lambda: self.do("toggle_loupe"), "toggle_loupe")
@@ -501,6 +512,7 @@ class MainWindow(QMainWindow):
         self.set_mode("grid" if unreviewed_in_triage else "edit", queue="triage" if unreviewed_in_triage else "edit")
         if self.setting_bool("perf/sam_preload", False) and self.ensure_sam(quiet=True):
             self.sam_worker.preload()
+        self.status_label.setText(f"{ws.session.name}: {len(ws.index)} frames. " + ws.hidden_summary())
         self.session_loaded.emit()
 
     @pyqtSlot(str)
@@ -559,6 +571,7 @@ class MainWindow(QMainWindow):
             else:
                 page = next((i for i, f in enumerate(self.queue) if f.status is None), 0) // self.grid.per_page                     if name == "triage" else 0
             marks = dict(self.grid.marks) if keep_stem else {}
+            self.grid.show_ignored = name == "zone"
             self.grid.set_items(self.queue, page, initial_mark=lambda fi, v=name: self.ws.initial_mark(fi, v))
             if marks:  # marks not committed yet survive the rebuild
                 on_page = {f.stem for f in self.grid.page_items()}
@@ -806,13 +819,16 @@ class MainWindow(QMainWindow):
     def update_status(self) -> None:
         if self.ws is None:
             return
-        self.counts_label.setText(self.ws.stats_line())
+        self.counts_label.setText(self.ws.stats_line() + "\n" + self.ws.hidden_summary())
         if self.mode == "grid":
             g = self.grid
             n_marked = sum(1 for m in g.marks.values() if m == "people")
             n_skip = sum(1 for m in g.marks.values() if m == "skip")
+            thr = self.project.ui_threshold
+            n_sugg = sum(1 for fi in g.page_items() if g.marks.get(fi.stem) == "skip" and fi.status is None and fi.ui < thr)
+            sugg = f" ({n_sugg} pre-marked as interface screens: click to undo)" if n_sugg else ""
             self.status_label.setText(f"GRID  {self.queue_box.currentText()}: {len(self.queue)} frames, page "
-                                      f"{g.page + 1}/{g.n_pages}  |  marked {n_marked}, skip {n_skip}")
+                                      f"{g.page + 1}/{g.n_pages}  |  marked {n_marked}, skip {n_skip}{sugg}")
         elif self.queue and self.cur_path is not None:
             fi = self.queue[self.idx]
             st = fi.status or "new"
@@ -1119,9 +1135,18 @@ class MainWindow(QMainWindow):
         self.run_job(ProcessJob(args), "Prelabeling", self.after_prelabel)
 
     def after_prelabel(self, stats: dict) -> None:
-        QMessageBox.information(self, "Prelabel", f"{stats['done']} of {stats['frames']} frames, "
-                                f"{stats['with_proposals']} with proposals, {stats['seconds']:.0f} s"
-                                + (" (cancelled)" if stats.get("cancelled") else ""))
+        lines = [f"{stats['done']} of {stats['frames']} frames, {stats['with_proposals']} with proposals, "
+                 f"{stats['seconds']:.0f} s" + (" (cancelled)" if stats.get("cancelled") else "")]
+        if "without_proposals" in stats:
+            lines.append(f"No detection at all: {stats['without_proposals']} frames.")
+            lines.append(f"Detections only inside an ignore zone (the frame looks empty): {stats['only_in_ignore_zone']} frames "
+                         "(grid view 'Proposals hidden by ignore zones').")
+            dropped = stats.get("dropped_classes") or {}
+            if dropped:
+                lines.append("Dropped, no project class: " + ", ".join(f"{k} {v}" for k, v in list(dropped.items())[:6])
+                             + " (set class_map in the project to keep one).")
+        lines.append("Details: View > Session report.")
+        QMessageBox.information(self, "Prelabel", "\n".join(lines))
         self.reload_session()
 
     def run_job(self, job, title: str, done) -> None:
@@ -1207,6 +1232,25 @@ class MainWindow(QMainWindow):
             if self.project.path:
                 self.project.save()
             self.open_target(self.project.path or self.project.sources[0])
+
+    def session_report(self) -> None:
+        """A window with counts of everything filtered out of the normal views and a view for each."""
+        from framelabel.core.report import capture_rows, frame_rows, prelabel_rows
+
+        from .dialogs import ReportDialog
+
+        if self.ws is None:
+            return
+        ws = self.ws
+        sections = [("What the recorder dropped before saving (capture.json)", capture_rows(ws.capture)),
+                    ("Model proposals", prelabel_rows(ws.session)),
+                    ("Frames and where to find them", frame_rows(ws.index, ws.conf, self.project.ui_threshold))]
+        dlg = ReportDialog(f"Session report: {ws.session.name}", sections, self)
+        dlg.open_view.connect(self.open_view)
+        dlg.exec()
+
+    def open_view(self, mode: str, queue: str) -> None:
+        self.set_mode(mode, queue=queue)
 
     def performance_dialog(self) -> None:
         from .dialogs import PerformanceDialog

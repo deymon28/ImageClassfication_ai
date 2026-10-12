@@ -7,6 +7,7 @@ from pathlib import Path
 from .boxes import Box, read_yolo, write_yolo, yolo_lines
 from .project import Project
 from .queues import FrameInfo, build_index, build_queue, frame_info
+from .report import capture_info, hidden_line
 from .session import Session
 from .uiscreen import ui_scores
 
@@ -19,6 +20,7 @@ class Workspace:
         self.ui = ui_scores(session, frames, project.ui_zone, progress, cancelled) if project.ui_zone else {}
         self.index: list[FrameInfo] = build_index(session, self.review, project.ignore_zones, self.ui, progress, cancelled)
         self.by_stem = {fi.stem: i for i, fi in enumerate(self.index)}
+        self.capture = capture_info(session)  # what the recorder dropped (capture.json), if the session has it
 
     # ---------------- index
     def refresh(self, stem: str) -> FrameInfo:
@@ -58,6 +60,10 @@ class Workspace:
 
     def counts(self) -> dict[str, int]:
         return self.review.counts()
+
+    def hidden_summary(self) -> str:
+        """One line about frames that are filtered out of the normal views (see core.report)."""
+        return hidden_line(self.index, self.capture, self.conf, self.project.ui_threshold)
 
     def stats_line(self) -> str:
         c = self.counts()

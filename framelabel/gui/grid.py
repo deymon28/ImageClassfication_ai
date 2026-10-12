@@ -49,6 +49,7 @@ class Grid(QWidget):
         self.marks: dict[str, str] = {}
         self.ui_threshold = 0.3
         self.show_weak = True
+        self.show_ignored = False  # draw proposals hidden by ignore zones (the "zone" view)
         self.aspect = (9, 16)
         self.pool = ThreadPoolExecutor(2)
         self.cache: dict[tuple, Future] = {}
@@ -201,6 +202,11 @@ class Grid(QWidget):
                     col = QColor(255, 200, 0, 90 + int(150 * min(c / 0.3, 1.0)))
                     p.setPen(QPen(col, 1, Qt.PenStyle.DotLine))
                     p.drawRect(QRectF(x + bx1 * tw, y + by1 * th, (bx2 - bx1) * tw, (by2 - by1) * th))
+            if self.show_ignored and fi.ignored_xyxy is not None:
+                p.setPen(QPen(QColor(0, 220, 255), 2, Qt.PenStyle.DotLine))
+                for bx1, by1, bx2, by2 in fi.ignored_xyxy:
+                    p.drawRect(QRectF(x + bx1 * tw, y + by1 * th, (bx2 - bx1) * tw, (by2 - by1) * th))
+                p.drawText(QRectF(x + 4, y + 4, tw - 8, 18), Qt.AlignmentFlag.AlignLeft, f"ignore zone {fi.ignored_conf:.2f}")
             mark = self.marks.get(fi.stem)
             if mark == "people":
                 p.setPen(QPen(QColor(255, 60, 60), 5))
@@ -247,6 +253,10 @@ class Grid(QWidget):
         p.drawImage(QRectF(QPointF(*v.to_widget(x1, y1)), QPointF(*v.to_widget(x2, y2))), self.preview_q,
                     QRectF(x1, y1, x2 - x1, y2 - y1))
         fi = self.preview
+        if fi.ignored_xyxy is not None and self.show_ignored:
+            p.setPen(QPen(QColor(0, 220, 255), 2, Qt.PenStyle.DotLine))
+            for bx1, by1, bx2, by2 in fi.ignored_xyxy:
+                p.drawRect(QRectF(QPointF(*v.to_widget(bx1 * v.iw, by1 * v.ih)), QPointF(*v.to_widget(bx2 * v.iw, by2 * v.ih))))
         if fi.prop_xyxy is not None and self.show_weak:
             for (bx1, by1, bx2, by2), c in zip(fi.prop_xyxy, fi.confs):
                 p.setPen(QPen(QColor(255, 200, 0, 200), 1, Qt.PenStyle.DotLine))

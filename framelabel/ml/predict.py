@@ -56,6 +56,7 @@ class Predictor:
         else:
             self.cfg.device, self.cfg.half = "cpu", False
         self.models = [YOLO(str(m)) for m in cfg.models]
+        self.dropped: dict[str, int] = {}  # detections of classes that map to no project class, by model class name
         if not cfg.class_maps:
             cfg.class_maps = [{i: i for i in m.names} for m in self.models]
 
@@ -82,9 +83,16 @@ class Predictor:
                     for i, (xyxy, conf, cls) in enumerate(self._passes(model, images, imgsz, flip)):
                         mapped = np.array([cmap.get(int(c)) if cmap.get(int(c)) is not None else -1 for c in cls], int)
                         keep = mapped >= 0
+                        for name in dropped_names(model.names, cls[~keep]):
+                            self.dropped[name] = self.dropped.get(name, 0) + 1
                         per_image[i].append((xyxy[keep], conf[keep], mapped[keep]))
         # a single pass is returned as is (the model's own NMS output); several passes are fused
         return [sets[0] if len(sets) == 1 else weighted_boxes_fusion(sets, self.cfg.fuse_iou) for sets in per_image]
+
+
+def dropped_names(names, cls) -> list[str]:
+    """Class names of detections whose class has no project class (`names`: the model's index -> name map)."""
+    return [str(names[int(c)]) if int(c) in names else str(int(c)) for c in cls]
 
 
 def rows_for(xyxy: np.ndarray, conf: np.ndarray, cls: np.ndarray, w: int, h: int, min_conf: float) -> list[str]:
@@ -108,7 +116,8 @@ def prelabel_sessions(sessions: list[Session], cfg: PredictConfig, redo: bool = 
     for s in sessions:
         s.auto_dir.mkdir(parents=True, exist_ok=True)
         todo += [(s, p) for p in s.frames() if redo or not s.auto_path(p.stem).exists()]
-    stats = {"frames": len(todo), "done": 0, "with_proposals": 0, "seconds": 0.0, "cancelled": False}
+    stats = {"frames": len(todo), "done": 0, "with_proposals": 0, "without_proposals": 0, "only_in_ignore_zone": 0,
+             "dropped_classes": {}, "seconds": 0.0, "cancelled": False}
     if not todo:
         return stats
     t0 = time.perf_counter()
@@ -129,12 +138,19 @@ def prelabel_sessions(sessions: list[Session], cfg: PredictConfig, redo: bool = 
             tmp = s.auto_path(p.stem).with_suffix(".tmp")
             tmp.write_text("\n".join(rows), encoding="utf-8")
             tmp.replace(s.auto_path(p.stem))
-            stats["with_proposals"] += any(not in_zones(*map(float, r.split()[1:3]), ignore_zones) for r in rows)
+            usable = any(not in_zones(*map(float, r.split()[1:3]), ignore_zones) for r in rows)
+            stats["with_proposals"] += usable
+            stats["without_proposals"] += not rows
+            stats["only_in_ignore_zone"] += bool(rows) and not usable  # the frame looks empty because of the zone
         stats["done"] += len(chunk)
         if progress:
             vram = torch.cuda.max_memory_allocated() / 2**30 if torch.cuda.is_available() else 0.0
             progress(stats["done"], len(todo), f"{stats['with_proposals']} with proposals, VRAM peak {vram:.2f} GB")
     stats["seconds"] = time.perf_counter() - t0
+    stats["dropped_classes"] = dict(sorted(pred.dropped.items(), key=lambda kv: -kv[1]))
+    meta = cfg.meta()
+    meta["run"] = {k: stats[k] for k in ("frames", "done", "with_proposals", "without_proposals", "only_in_ignore_zone",
+                                         "dropped_classes", "cancelled")}  # of the whole run, not of one session
     for s in sessions:
-        (s.auto_dir / "_meta.json").write_text(json.dumps(cfg.meta()), encoding="utf-8")
+        (s.auto_dir / "_meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return stats

@@ -10,6 +10,8 @@ Queues are ordered lists of frames to walk through:
   unreviewed / pos / neg / skip / todo   by review status
   class:<i>   frames whose labels contain class i
   ui          suspected interface screens
+  zone        frames whose proposals were hidden by an ignore zone (they look empty otherwise)
+  weak        unreviewed frames whose best proposal is below the shown confidence
 """
 from __future__ import annotations
 
@@ -22,7 +24,8 @@ from .boxes import iou_matrix, parse_rows, in_zones
 from .index_cache import read_rows_cached
 from .session import Review, Session
 
-QUEUES = ("edit", "triage", "uncertain", "small", "disagree", "all", "unreviewed", "todo", "pos", "neg", "skip", "ui")
+QUEUES = ("edit", "triage", "uncertain", "small", "disagree", "all", "unreviewed", "todo", "pos", "neg", "skip", "ui", "zone",
+          "weak")
 
 
 @dataclass
@@ -36,6 +39,8 @@ class FrameInfo:
     label_h: list[float] = field(default_factory=list)
     label_xyxy: np.ndarray | None = None
     ui: float = 1.0
+    ignored_conf: float = 0.0                              # best confidence among proposals hidden by ignore zones
+    ignored_xyxy: np.ndarray | None = None                 # normalized boxes of those hidden proposals
 
     @property
     def stem(self) -> str:
@@ -56,10 +61,15 @@ def frame_info_from_rows(path: Path, status: str | None, auto_rows, label_rows, 
     """FrameInfo from already parsed rows; None rows mean the file does not exist."""
     fi = FrameInfo(path, status, ui=ui)
     if auto_rows is not None:
-        rows = [r for r in auto_rows if r[5] is not None and not in_zones(r[1], r[2], ignore_zones)]
+        scored = [r for r in auto_rows if r[5] is not None]
+        rows = [r for r in scored if not in_zones(r[1], r[2], ignore_zones)]
         fi.confs = [r[5] for r in rows]
         fi.prop_h = [r[4] for r in rows]
         fi.prop_xyxy = _xyxy(rows)
+        hidden = [r for r in scored if in_zones(r[1], r[2], ignore_zones)]
+        if hidden:
+            fi.ignored_conf = max(r[5] for r in hidden)
+            fi.ignored_xyxy = _xyxy(hidden)
     if status in ("pos", "neg") and label_rows is not None:
         fi.label_cls = [r[0] for r in label_rows]
         fi.label_h = [r[4] for r in label_rows]
@@ -141,6 +151,10 @@ def build_queue(index: list[FrameInfo], name: str, conf: float = 0.3, band: tupl
         return [f for f in index if f.status == name]
     if name == "ui":
         return [f for f in index if f.ui < ui_threshold]
+    if name == "zone":
+        return [f for f in index if f.ignored_conf >= conf]
+    if name == "weak":
+        return [f for f in index if f.status is None and 0 < f.max_conf < conf]
     if name.startswith("class:"):
         k = int(name.split(":", 1)[1])
         return [f for f in index if k in f.label_cls]

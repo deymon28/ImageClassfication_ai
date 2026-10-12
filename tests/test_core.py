@@ -439,3 +439,78 @@ def test_apply_reload_keeps_statuses_and_takes_new_proposals(tmp_path):
     ws.apply_reload(fresh)  # an older snapshot must not undo the status either
     assert ws.index[0].status == "skip" and ws.review.get(stems[0]) == "skip"
     assert ws.index[3].status == "pos" and ws.index[3].label_cls == [1]  # labels survive
+
+
+# ---------------------------------------------------------------- report: what is filtered out
+def _report_session(tmp_path):
+    from framelabel.core.boxes import write_yolo
+
+    s = tmp_path / "session_20261008_100000"
+    (s / "frames").mkdir(parents=True)
+    (s / "labels_auto").mkdir()
+    stems = [f"10{i:04d}_000" for i in range(6)]
+    for st in stems:
+        cv2.imwrite(str(s / "frames" / f"{st}.jpg"), np.zeros((36, 64, 3), np.uint8))
+    auto = {0: "",                                                      # nothing detected
+            1: "0 0.03 0.8 0.02 0.05 0.60",                              # only inside the HUD zone: looks empty
+            2: "0 0.5 0.5 0.1 0.3 0.10",                                 # weak (below the shown 0.2)
+            3: "0 0.5 0.5 0.1 0.3 0.70\n0 0.03 0.8 0.02 0.05 0.50",    # a real one + one hidden by the zone
+            4: "0 0.5 0.5 0.1 0.3 0.30"}
+    for i, txt in auto.items():
+        (s / "labels_auto" / f"{stems[i]}.txt").write_text(txt)
+    return Session.open(s), stems
+
+
+def test_zone_and_weak_queues_show_what_is_hidden(tmp_path):
+    s, stems = _report_session(tmp_path)
+    idx = build_index(s, s.review(), HUD)
+    by = {f.stem: f for f in idx}
+    assert by[stems[1]].ignored_conf == 0.6 and by[stems[1]].max_conf == 0.0 and by[stems[1]].ignored_xyxy.shape == (1, 4)
+    assert by[stems[0]].ignored_xyxy is None and by[stems[5]].prop_xyxy is None
+    q = lambda name: [f.stem for f in build_queue(idx, name, conf=0.2)]  # noqa: E731
+    assert q("zone") == [stems[1], stems[3]]                    # the zone proposals, whatever else the frame has
+    assert q("weak") == [stems[2]]                              # unreviewed, best proposal 0.10 < 0.2
+    assert stems[1] in q("triage") and stems[2] in q("triage")  # they look empty in the grid: now explained
+
+
+def test_report_rows_count_what_each_view_shows(tmp_path):
+    import json
+
+    from framelabel.core.report import capture_info, capture_rows, frame_rows, hidden_line, prelabel_rows
+
+    s, stems = _report_session(tmp_path)
+    idx = build_index(s, s.review(), HUD)
+    rows = {r.queue: r for r in frame_rows(idx, 0.2, 0.3) if r.queue}
+    for name, row in rows.items():  # every count equals the size of the view it links to
+        assert row.count == len(build_queue(idx, name, conf=0.2, ui_threshold=0.3)) and row.mode in ("grid", "edit")
+    assert rows["zone"].count == 2 and rows["weak"].count == 1 and rows["all"].count == 6
+    assert capture_info(s) is None and "No capture.json" in capture_rows(None)[0].label
+    (s.root / "capture.json").write_text(json.dumps({
+        "saved_by_reason": {"change": 5, "burst": 1},
+        "skipped_by_reason": {"ui": 40, "duplicate": 3, "waiting": 99},
+        "settings": {"ui_filter": True, "policy": {"ui_threshold": 0.3}}}))
+    info = capture_info(s)
+    got = {r.label: r for r in capture_rows(info)}
+    assert got["Recorder skipped: ui"].count == 40 and "cannot be reviewed" in got["Recorder skipped: ui"].where
+    assert got["Recorder setting: ui_filter"].where.startswith("on:")
+    assert [r.count for r in capture_rows(info) if r.label == "Recorder skipped: ui"] == [40]
+    line = hidden_line(idx, info, 0.2, 0.3)
+    assert "40 ui" in line and "zone-hidden proposals 2" in line and "weak only 1" in line
+    assert prelabel_rows(s)[0].label == "No model proposals yet"  # no _meta.json written yet
+    (s.auto_dir / "_meta.json").write_text(json.dumps({"weights": ["x/run_a/weights/best.pt"], "imgsz": 1280, "tta": True,
+                                                       "conf": 0.05, "run": {"without_proposals": 4, "only_in_ignore_zone": 2,
+                                                                             "dropped_classes": {"car": 7}}}))
+    pr = {r.label: r for r in prelabel_rows(s)}
+    assert pr["Prelabel models"].where == "run_a"
+    assert pr["Last prelabel run: detections of classes without a project class (dropped)"].count == 7
+
+
+def test_workspace_reads_capture_info_and_summarizes(tmp_path):
+    import json
+
+    s, _ = _report_session(tmp_path)
+    (s.root / "capture.json").write_text(json.dumps({"skipped_by_reason": {"ui": 12}}))
+    proj = Project.from_dict({"name": "t", "classes": ["enemy"], "sources": [str(tmp_path)],
+                              "ignore_zones": [list(HUD[0])]}, tmp_path)
+    ws = Workspace(proj, s, conf=0.2)
+    assert ws.capture == {"skipped_by_reason": {"ui": 12}} and "12 ui" in ws.hidden_summary()

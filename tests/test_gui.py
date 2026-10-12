@@ -617,3 +617,33 @@ def test_sam_requests_are_served_by_one_python_thread(app, project, fake_sam):
     assert isinstance(w.sam_worker.thread, threading.Thread) and w.sam_worker.thread.is_alive()
     w.close()
     assert w.sam_worker is None
+
+
+def test_session_report_window_opens_the_view_of_a_row(app, project, monkeypatch):
+    from PyQt6.QtWidgets import QDialog
+
+    from framelabel.gui.app import MainWindow
+    from framelabel.gui.dialogs import ReportDialog
+
+    path, s = project
+    (s / "capture.json").write_text('{"saved_by_reason": {"change": 8}, "skipped_by_reason": {"ui": 50}}')
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, path)
+    assert "recorder dropped: 50 ui" in w.counts_label.text() and "50 ui" in w.status_label.text()
+    seen = {}
+
+    def fake_exec(self):  # the user double-clicks the "weak proposals" row, the report closes, the view opens
+        seen["dlg"] = self
+        row = next(r for r, v in self.views.items() if v == ("grid", "zone"))
+        self.on_double_click(row, 0)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(ReportDialog, "exec", fake_exec)
+    w.session_report()
+    text = seen["dlg"].as_text()
+    assert "Recorder skipped: ui: 50" in text and "Proposals hidden by an ignore zone" in text
+    assert w.mode == "grid" and w.queue_box.currentData() == "zone" and w.grid.show_ignored
+    w.set_mode("grid", queue="triage")
+    assert not w.grid.show_ignored
+    w.close()

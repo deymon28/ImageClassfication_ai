@@ -126,6 +126,24 @@ python -m framelabel eval --data ..\fin_snip_helper\datasets\own\data.yaml --pro
 It reports AP50 and, per confidence, precision, recall, false positives per frame and recall by box height
 (<20, 20-50, 50+ px at 1080p). `NAME=A.pt+B.pt@1536:tta` evaluates an ensemble / another size / TTA.
 
+## What is filtered out, and where to see it
+
+Frames can be hidden from the normal views in several places; *View > Session report* (or the button under the mode
+switch) counts every one of them and double-clicking a row opens the view that shows those frames. The left panel and
+the status bar carry a one-line summary of the same numbers.
+
+* **The recorder** (ImageHook, `ui_filter`) drops interface screens, duplicates and non-game frames *before* saving;
+  its counts are read from the session's `capture.json`. These frames are not on disk and cannot be reviewed here
+  (record with `ui_filter` off to keep them).
+* **Suspected interface screens** (framelabel's own detection, grid view): pre-marked SKIP; the status line says how
+  many frames of the page are pre-marked, a click on a tile undoes the mark.
+* **Proposals hidden by ignore zones** (grid view `zone`): the model detected something only inside an ignore zone
+  (the HUD icon), so the frame looks empty; the hidden boxes are drawn in cyan.
+* **Weak proposals** (grid view `weak`): below the shown confidence; dotted boxes, `W` in the editor shows them.
+* **Dropped classes**: model classes without a project class (`class_map`) are not written; a prelabel run records the
+  counts (frames without any detection, frames only inside a zone, dropped classes) in `labels_auto/_meta.json` under
+  `run` and shows them when it finishes.
+
 ## Responsiveness
 
 Nothing that can take longer than ~50 ms runs on the window's thread:
@@ -156,7 +174,7 @@ the window is a separate process: *Cancel* stops it after the current batch, and
 
 * `framelabel/core` - pure logic: boxes and YOLO files, sessions and `review.json`, project files, queues,
   splitting and export, interface-screen detection, box tracking, undo history, view math, `index_cache.py`
-  (cached label rows, `Cancelled`).
+  (cached label rows, `Cancelled`), `report.py` (what is filtered out).
 * `framelabel/ml` - GPU parts: guard, model registry, prediction + WBF, SAM fitting, evaluation, training.
 * `framelabel/gui` - PyQt6 window, canvas, grid, dialogs, keymap; background work: `workers.py` (thread jobs),
   `process_job.py` (child processes), `sam_worker.py`, `frame_list.py` (model/view), `watchdog.py`.
