@@ -39,7 +39,7 @@ releases (`from ultralytics.utils.downloads import attempt_download_asset`).
 ```
 
 Without a project file the class list comes from the folder's `review.json` (or a single class `object`);
-*File > New project* writes one (*Settings > Project* edits it). A project file (YAML, see `examples/abi.yaml`) holds:
+*File > New project* writes one (*Settings > Project* edits it; for a folder opened without a project file it asks where to save one, since that is where the settings live). Folder and file names may contain any characters (Cyrillic included). A project file (YAML, see `examples/abi.yaml`) holds:
 
 * `classes` - names and colours; the order is the class id. Digits 1-9 select a class.
 * `sources` - session folders, folders of sessions (`datasets/collected`), plain image folders or YOLO datasets
@@ -61,7 +61,7 @@ Without a project file the class list comes from the folder's `review.json` (or 
 
 Labels are YOLO rows `cls cx cy w h` (normalized); proposals add a confidence column. `review.json` keeps the
 per-frame status: `pos` (labeled with objects), `neg` (empty), `skip` (unusable), `todo` (marked in the grid, not
-labeled yet). Every decision is written immediately (atomically), so labeling can stop and resume at any time.
+labeled yet). Every decision is written immediately (atomically), so labeling can stop and resume at any time. A `review.json` that cannot be read is never taken for an empty one (the next save would overwrite every decision): the session does not open and says why, and the session list marks it "damaged". A label row that is not numbers (a header, a cut-off line) is skipped, so one bad row never makes a session unreadable.
 `review.json` also keeps the class list the labels were made with (the label rows hold the class *number*). If a
 project's list is not that list or an extension of it (reordered, renamed, shortened), opening the session asks first
 and never rewrites the stored list unless you choose to.
@@ -102,7 +102,7 @@ and never rewrites the stored list unless you choose to.
    Grid tiles per page*): 1 x 1, 2 x 1, 1 x 2, 2 x 2 ... 5 x 4. *Ctrl+B* hides the side panels, **Ctrl+K** searches
    views, actions and frames, F1 lists every key. Pointing at a row of the frame list for a moment shows the photo with its
    boxes beside the list (*Settings > Preview a frame when the mouse rests on the list*).
-3. **Editor**: proposals are dashed boxes with their confidence; drag on empty space = new box, drag a box = move,
+3. **Editor**: proposals are dashed boxes with their confidence; drag on empty space = new box, drag a box = move (a click, or a hand's jitter of a pixel or two, only selects: it never makes the frame an edit),
    drag a corner or an edge = resize, RMB = delete, wheel = zoom at cursor, MMB drag = pan. Space = accept and next,
    E = empty, X = skip, A/D = previous/next, N = next unreviewed, Ctrl+Z / Ctrl+Y = undo/redo, R = back to the model's
    proposals, Shift+Space = accept all proposals as labels. M toggles the loupe: it magnifies what is on screen
@@ -134,7 +134,7 @@ it also says what was found (`missed 1, small`). F5 re-reads
 proposals and new frames without leaving the current frame, Ctrl+G jumps to a frame by number or name, and the
 editor reopens where you stopped in each queue. *Edit > Fit all boxes on this frame with SAM* refines every box.
 
-All keys can be changed in *Settings > Keyboard shortcuts* (F1 shows what every key and mouse button does); letters work in any keyboard layout (a Russian layout
+All keys can be changed in *Settings > Keyboard shortcuts* (F1 shows what every key and mouse button does; a key that would do two things in the same mode is refused); letters work in any keyboard layout (a Russian layout
 triggers the same actions).
 
 ## Labeler model for Arena Breakout Infinite
@@ -213,7 +213,7 @@ the window is a separate process: *Cancel* stops it after the current batch, and
 * `framelabel/core` - pure logic: boxes and YOLO files, sessions and `review.json`, project files, queues and views,
   splitting and export, interface-screen detection, box tracking, undo history, view math, `index_cache.py`
   (cached label rows, `Cancelled`), `report.py` (what is filtered out), `views.py` (stages, lenses, counts),
-  `checked.py` (frames checked in Review), `pace.py`.
+  `checked.py` (frames checked in Review), `pace.py`, `images.py` (reads frames from any path: `cv2.imread` fails on non-ASCII paths on Windows).
 * `framelabel/ml` - GPU parts: guard, model registry, prediction + WBF, SAM fitting, evaluation, training.
 * `framelabel/gui` - PyQt6 window, canvas, grid, dialogs, keymap; background work: `workers.py` (thread jobs),
   `process_job.py` (child processes), `sam_worker.py`, `frame_list.py` (model/view), `workflow.py` (stages, modes, counts), `panels.py` (workflow list, mode switch,
