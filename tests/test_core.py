@@ -62,7 +62,7 @@ def test_bad_rows_cost_only_themselves(tmp_path):
 def test_frames_in_a_non_ascii_folder_are_read(tmp_path):
     from framelabel.core.images import imread
 
-    (frames := tmp_path / "кадры" / "frames").mkdir(parents=True)
+    (frames := tmp_path / "\u043a\u0430\u0434\u0440\u044b" / "frames").mkdir(parents=True)  # a Cyrillic folder name
     ok, buf = cv2.imencode(".jpg", np.full((40, 60, 3), 200, np.uint8))
     (frames / "a.jpg").write_bytes(buf.tobytes())
     assert imread(frames / "a.jpg").shape == (40, 60, 3)
