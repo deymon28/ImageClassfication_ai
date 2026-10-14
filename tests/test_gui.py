@@ -1777,3 +1777,49 @@ def test_the_list_preview_survives_the_window_going_away(app, project):
     sip.delete(peek.label)  # what an exit does: the label is gone, a late event must not raise
     peek.hide()
     peek.show_now()
+
+def test_auto_track_is_a_switch_with_a_key_and_is_remembered(app, project):
+    w = open_window(app, project)
+    w.switch_mode()  # an editor key
+    assert w.mode == "edit" and not w.carry_check.isChecked()
+    w.handle_key("Y")
+    assert w.carry_check.isChecked() and w.settings.value("auto_track") == "true"
+    w.handle_key("Y")
+    assert not w.carry_check.isChecked() and w.settings.value("auto_track") == "false"
+    w.close()
+
+
+def test_a_class_key_always_applies_even_when_the_list_already_shows_it(app, project):
+    from framelabel.core.boxes import Box
+
+    w = open_window(app, project)
+    w.switch_mode()
+    c = w.canvas
+    c.add_box(Box(100, 100, 200, 160, 0))  # selected, class 1
+    w.handle_key("2")
+    assert c.boxes[0].cls == 1 and c.cls == 1
+    c.select(-1)  # nothing selected: the list shows the class new boxes get
+    assert w.class_list.currentRow() == 1
+    w.handle_key("1")
+    assert c.cls == 0 and w.class_list.currentRow() == 0
+    c.add_box(Box(10, 10, 60, 60, 0))
+    c.select(0)  # the first box has class 2: the list shows it, the draw class stays 1
+    assert w.class_list.currentRow() == 1 and c.cls == 0
+    w.handle_key("1")  # the list says 2, the key says 1: must switch the box even if the list was stale
+    assert c.boxes[0].cls == 0
+    w.close()
+
+
+def test_right_click_on_the_box_table_deletes_a_box_at_once(app, project):
+    from framelabel.core.boxes import Box
+
+    w = open_window(app, project)
+    w.switch_mode()
+    w.canvas.add_box(Box(100, 100, 200, 160, 0))
+    w.canvas.add_box(Box(10, 10, 60, 60, 1))
+    assert w.box_table.rowCount() == 2
+    w.box_table_delete(w.box_table.visualRect(w.box_table.model().index(0, 0)).center())
+    assert len(w.canvas.boxes) == 1 and w.canvas.boxes[0].cls == 1 and w.box_table.rowCount() == 1
+    w.canvas.undo()
+    assert len(w.canvas.boxes) == 2
+    w.close()

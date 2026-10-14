@@ -321,6 +321,8 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.box_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.box_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.box_table.setShowGrid(False)
+        self.box_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.box_table.customContextMenuRequested.connect(self.box_table_delete)
         self.box_table.cellClicked.connect(lambda r, _c: self.canvas.select(r, center=False))
         self.box_table.cellDoubleClicked.connect(lambda r, _c: self.canvas.select(r, center=True))
         hh = self.box_table.horizontalHeader()
@@ -336,7 +338,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
     ACTION_TITLES = {"undo_page": "Undo page", "open_frame": "Open in editor", "mark_checked": "Mark checked",
                      "accept_next": "Save + next", "empty_next": "Empty", "skip_next": "Skip",
                      "prev": "Previous", "next": "Next", "undo": "Undo", "copy_prev": "Copy prev",
-                     "propagate_prev": "Track prev", "sam_fit": "SAM fit",
+                     "propagate_prev": "Track now", "sam_fit": "SAM fit",
                      "accept_proposals": "Accept all", "commit_page": "Commit page",
                      "prev_page": "Previous page", "next_page": "Next page", "grid_view": "Next stage",
                      "reload": "Reload"}
@@ -410,9 +412,12 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.sam_check = QCheckBox("SAM-fit new boxes")
         self.sam_check.setToolTip("Every box you draw is snapped to the object by SAM (needs the GPU, game closed)")
         self.sam_check.toggled.connect(lambda v: setattr(self.canvas, "sam_on_draw", v))
-        self.carry_check = QCheckBox("Carry boxes forward")
-        self.carry_check.setToolTip("When the next frame has no proposals and is not reviewed, the previous frame's boxes "
-                                    "are tracked onto it")
+        self.carry_check = QCheckBox("Auto-track to next frame")
+        self.carry_check.setToolTip("The on/off switch for tracking. On: moving to a new frame without proposals tracks "
+                                    "the previous frame's boxes onto it by itself. Off: nothing is carried over (the "
+                                    "'Track now' button and T still track once, on request)")
+        self.carry_check.setChecked(str(self.settings.value("auto_track", "false")).lower() in ("1", "true", "yes"))
+        self.carry_check.toggled.connect(self.on_carry_toggled)
         tv.addWidget(self.sam_check)
         tv.addWidget(self.carry_check)
         tv.addStretch(1)
@@ -526,7 +531,8 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.act(m, "Go to frame...", lambda: self.do("goto_frame"), "goto_frame")
         m.addSeparator()
         self.act(m, "Copy boxes from previous frame", lambda: self.do("copy_prev"), "copy_prev")
-        self.act(m, "Track boxes from previous frame", lambda: self.do("propagate_prev"), "propagate_prev")
+        self.act(m, "Track boxes from previous frame (once, this frame)", lambda: self.do("propagate_prev"), "propagate_prev")
+        self.act(m, "Auto-track to next frames on / off", lambda: self.do("toggle_carry"), "toggle_carry")
         self.act(m, "Fit selected box with SAM (Alt+click: from a point)", lambda: self.do("sam_fit"), "sam_fit")
         self.act(m, "Fit all boxes on this frame with SAM", lambda: self.do("sam_fit_all"))
 
@@ -1028,24 +1034,48 @@ class MainWindow(WorkflowMixin, QMainWindow):
 
     def on_boxes_changed(self) -> None:
         self.fill_box_table()
+        self.sync_class_list()
         self.update_status()
 
     def on_selection(self, i: int) -> None:
         if 0 <= i < self.box_table.rowCount():
             self.box_table.selectRow(i)
-            b = self.canvas.boxes[i]
-            self.class_list.blockSignals(True)
-            self.class_list.setCurrentRow(b.cls)
-            self.class_list.blockSignals(False)
         else:
             self.box_table.clearSelection()
+        self.sync_class_list()
+
+    def sync_class_list(self) -> None:
+        """The class list shows the selected box's class, else the class new boxes get. Only the list changes."""
+        c = self.canvas
+        row = c.boxes[c.sel].cls if 0 <= c.sel < len(c.boxes) else c.cls
+        if 0 <= row < self.class_list.count() and self.class_list.currentRow() != row:
+            self.class_list.blockSignals(True)
+            self.class_list.setCurrentRow(row)
+            self.class_list.blockSignals(False)
 
     def on_class_row(self, row: int) -> None:
-        if row < 0:
+        if row >= 0:
+            self.choose_class(row)
+
+    def choose_class(self, row: int) -> None:
+        """Class `row` for new boxes and for the selected box. Always applied, even when the list already shows it
+        (a key press must not depend on what the list happened to show)."""
+        if not 0 <= row < len(self.project.classes):
             return
         self.canvas.cls = row
         if self.canvas.sel >= 0:
             self.canvas.set_class_of(self.canvas.sel, row)
+        self.sync_class_list()
+        self.update_status()
+
+    def box_table_delete(self, pos) -> None:
+        """Right click on a row of the box table deletes that box at once (Ctrl+Z brings it back)."""
+        row = self.box_table.rowAt(pos.y())
+        if not 0 <= row < len(self.canvas.boxes):
+            return
+        self.canvas.select(row, center=False)
+        self.canvas.delete_selected()
+        self.toast("Box deleted (Ctrl+Z undoes)")
 
     def conf_key(self, proj: Project) -> str:
         ident = str(proj.path or (proj.sources[0] if proj.sources else proj.name)).lower().encode()
@@ -1081,6 +1111,11 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.apply_queue(keep_stem=stem)
         self.refresh_counts()
         self.toast(f"Showing proposals from confidence {self.ws.conf:.2f}: {len(self.queue)} frames in this view")
+
+    def on_carry_toggled(self, v: bool) -> None:
+        self.settings.setValue("auto_track", "true" if v else "false")
+        self.toast("Auto-track " + ("ON: new frames get the previous boxes" if v else "OFF: nothing is carried over"))
+        self.update_status()
 
     def on_weak_toggled(self, v: bool) -> None:
         self.canvas.show_weak = v
@@ -1193,7 +1228,8 @@ class MainWindow(WorkflowMixin, QMainWindow):
             where = f"Editor  |  frame {self.idx + 1} of {len(self.queue)}  |  {fi.stem}  |  {st}{' (unsaved edits)' if self.canvas.dirty else ''}"
             self.status_label.setText(f"EDIT {self.idx + 1}/{len(self.queue)}  {fi.stem}  [{fi.status or 'new'}{'*' if self.canvas.dirty else ''}]"
                                       f"{ui}  class {self.canvas.cls + 1}={cls}  boxes {len(self.canvas.boxes)}{more}  "
-                                      f"zoom {self.canvas.view.zoom:.1f}x")
+                                      f"zoom {self.canvas.view.zoom:.1f}x  |  auto-track "
+                                      f"{'ON' if self.carry_check.isChecked() else 'off'} (Y)")
         else:
             where = "Editor  |  no frames"
         self.setWindowTitle(f"framelabel - {self.project.name} - {where_name}")
@@ -1225,7 +1261,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
         if self.mode == "edit" and name.isdigit() and name != "0":
             k = int(name) - 1
             if k < len(self.project.classes):
-                self.class_list.setCurrentRow(k)
+                self.choose_class(k)
                 return True
         if name == "W":
             self.weak_check.toggle()
@@ -1274,6 +1310,8 @@ class MainWindow(WorkflowMixin, QMainWindow):
         elif action == "toggle_panels":
             self.panels_visible = not self.panels_visible
             self.apply_panels()
+        elif action == "toggle_carry":
+            self.carry_check.toggle()
         elif action == "goto_frame":
             self.goto_frame()
         elif action in STAGE_BY_ACTION:

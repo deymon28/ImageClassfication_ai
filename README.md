@@ -108,8 +108,10 @@ and never rewrites the stored list unless you choose to.
    proposals, Shift+Space = accept all proposals as labels. M toggles the loupe: it magnifies what is on screen
    (3x by default, following the view zoom smoothly); Ctrl+wheel or +/- change it (1.5-10x, remembered).
 4. **Faster boxes**: W shows weak proposals below the threshold (click one to accept it); P copies the boxes of the
-   previous labeled frame, T tracks them onto this frame (template matching, then snapped to overlapping proposals);
-   "Carry boxes" does that automatically when moving to an unreviewed frame without proposals. F fits the selected
+   previous labeled frame, T ("Track now") tracks them onto this frame once (template matching, then snapped to
+   overlapping proposals). That is a one-shot action, not a switch: the switch is "Auto-track to next frame" (Y,
+   remembered, shown in the editor status bar), which does the same automatically when moving to an unreviewed frame
+   without proposals; turn it off to stop boxes being carried over. F fits the selected
    box with SAM, Alt+click creates a box from a point with SAM, "Fit new boxes with SAM" refines every drawn box.
    SAM runs on a crop around the object, so far (small) people are fitted too. *Settings > SAM fit correction* moves
    every side of each SAM box by a fixed number of pixels outward or inward (for a fitter that is a pixel or two tight).
