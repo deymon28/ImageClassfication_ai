@@ -1228,7 +1228,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
             more = f"  model sees {len(self.canvas.ghosts)} more (amber)" if self.canvas.ghosts else ""
             cls = self.project.class_names[self.canvas.cls]
             where = f"Editor  |  frame {self.idx + 1} of {len(self.queue)}  |  {fi.stem}  |  {st}{' (unsaved edits)' if self.canvas.dirty else ''}"
-            self.status_label.setText(f"EDIT {self.idx + 1}/{len(self.queue)}  {fi.stem}  [{fi.status or 'new'}{'*' if self.canvas.dirty else ''}]"
+            self.status_label.setText(f"EDIT {self.idx + 1}/{len(self.queue)}  {fi.stem}  [{st}{'*' if self.canvas.dirty else ''}]"
                                       f"{ui}  class {self.canvas.cls + 1}={cls}  boxes {len(self.canvas.boxes)}{more}  "
                                       f"zoom {self.canvas.view.zoom:.1f}x  |  auto-track "
                                       f"{'ON' if self.carry_check.isChecked() else 'off'} (Y)")
