@@ -118,7 +118,7 @@ def prelabel_sessions(sessions: list[Session], cfg: PredictConfig, redo: bool = 
         s.auto_dir.mkdir(parents=True, exist_ok=True)
         todo += [(s, p) for p in s.frames() if redo or not s.auto_path(p.stem).exists()]
     stats = {"frames": len(todo), "done": 0, "with_proposals": 0, "without_proposals": 0, "only_in_ignore_zone": 0,
-             "dropped_classes": {}, "seconds": 0.0, "cancelled": False}
+             "unreadable": 0, "dropped_classes": {}, "seconds": 0.0, "cancelled": False}
     if not todo:
         return stats
     t0 = time.perf_counter()
@@ -132,6 +132,7 @@ def prelabel_sessions(sessions: list[Session], cfg: PredictConfig, redo: bool = 
         chunk = todo[start:start + cfg.batch]
         images = [imread(str(p)) for _, p in chunk]
         ok = [(sp, im) for sp, im in zip(chunk, images) if im is not None]
+        stats["unreadable"] += len(chunk) - len(ok)  # no proposals file: the next run tries them again
         results = pred.predict([im for _, im in ok]) if ok else []
         for ((s, p), im), (xyxy, conf, cls) in zip(ok, results):
             h, w = im.shape[:2]
@@ -151,7 +152,7 @@ def prelabel_sessions(sessions: list[Session], cfg: PredictConfig, redo: bool = 
     stats["dropped_classes"] = dict(sorted(pred.dropped.items(), key=lambda kv: -kv[1]))
     meta = cfg.meta()
     meta["run"] = {k: stats[k] for k in ("frames", "done", "with_proposals", "without_proposals", "only_in_ignore_zone",
-                                         "dropped_classes", "cancelled")}  # of the whole run, not of one session
+                                         "unreadable", "dropped_classes", "cancelled")}  # of the whole run, not of one session
     for s in sessions:
         (s.auto_dir / "_meta.json").write_text(json.dumps(meta), encoding="utf-8")
     return stats

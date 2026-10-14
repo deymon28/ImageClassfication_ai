@@ -69,9 +69,9 @@ def ui_scores(session: Session, frames: list[Path], zone, progress=None, cancell
     if cache.exists():
         try:
             scores = json.loads(cache.read_text(encoding="utf-8"))
-        except ValueError:
+        except (OSError, ValueError):
             scores = {}
-        if scores.get("_zone", zone) != zone:  # caches without '_zone' were made with the default zone
+        if not isinstance(scores, dict) or scores.get("_zone", zone) != zone:  # caches without '_zone' were made with the default zone
             scores = {}
     missing = [p for p in frames if p.stem not in scores]
     if scores and not missing:

@@ -10,6 +10,8 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 from .boxes import parse_rows, read_rows
 from .index_cache import Cancelled
 from .split import balanced_block_split, choose_negatives, split_by_time
@@ -98,8 +100,10 @@ def export_dataset(sessions: list[Session], classes: list[str], out: Path, neg_r
                         raise Cancelled()
                     if progress:
                         progress(done, total, "exporting images")
-        names = "\n".join(f"  {i}: {n}" for i, n in enumerate(classes))
-        (tmp / "data.yaml").write_text(f"path: {out.as_posix()}\ntrain: images/train\nval: images/val\nnames:\n{names}\n",
+        # plain names come out as '  0: enemy'; a name YAML would misread ('no: helmet', '#2') is quoted
+        names = yaml.safe_dump(dict(enumerate(classes)), allow_unicode=True, default_flow_style=False, sort_keys=False)
+        names = "".join(f"  {line}" for line in names.splitlines(True))
+        (tmp / "data.yaml").write_text(f"path: {out.as_posix()}\ntrain: images/train\nval: images/val\nnames:\n{names}",
                                        encoding="utf-8")
         if out.exists():
             shutil.rmtree(out)

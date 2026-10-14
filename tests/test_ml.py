@@ -141,6 +141,7 @@ def test_prelabel_reports_what_it_dropped_and_hid(tmp_path, monkeypatch):
     (s / "frames").mkdir(parents=True)
     for i in range(3):
         cv2.imwrite(str(s / "frames" / f"10000{i}_000.jpg"), np.zeros((100, 200, 3), np.uint8))
+    (s / "frames" / "100003_000.jpg").write_bytes(b"cut off")  # a damaged frame
 
     class FakePredictor:
         def __init__(self, cfg):
@@ -155,12 +156,13 @@ def test_prelabel_reports_what_it_dropped_and_hid(tmp_path, monkeypatch):
     monkeypatch.setattr(pr, "Predictor", FakePredictor)
     cfg = pr.PredictConfig(models=[], batch=4)
     stats = pr.prelabel_sessions([Session.open(s)], cfg, ignore_zones=[(0.0, 0.75, 0.07, 0.92)])
-    assert (stats["frames"], stats["with_proposals"], stats["without_proposals"], stats["only_in_ignore_zone"]) == (3, 1, 1, 1)
+    assert (stats["frames"], stats["with_proposals"], stats["without_proposals"], stats["only_in_ignore_zone"]) == (4, 1, 1, 1)
+    assert stats["unreadable"] == 1 and not (s / "labels_auto" / "100003_000.txt").exists()
     assert stats["dropped_classes"] == {"car": 2}
     import json
 
     meta = json.loads((s / "labels_auto" / "_meta.json").read_text())
-    assert meta["run"]["only_in_ignore_zone"] == 1 and meta["run"]["dropped_classes"] == {"car": 2}
+    assert meta["run"]["only_in_ignore_zone"] == 1 and meta["run"]["dropped_classes"] == {"car": 2} and meta["run"]["unreadable"] == 1
 
 
 def test_dropped_names_uses_model_names():

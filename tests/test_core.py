@@ -182,7 +182,11 @@ def test_export_builds_two_class_dataset(tmp_path):
     pre = "session_20261008_100000_"
     assert train == [pre + "100000_000.jpg", pre + "100001_000.jpg"] and val == [pre + "100003_000.jpg"]
     assert (out / "labels/train" / f"{pre}100001_000.txt").read_text() == ""
-    assert "1: corpse" in (out / "data.yaml").read_text() and res.boxes["train"] == [1, 1]
+    assert "\n  1: corpse\n" in (out / "data.yaml").read_text() and res.boxes["train"] == [1, 1]
+    export_dataset([Session.open(s)], ["no: helmet", "#2"], out, split="time")  # names YAML would misread
+    import yaml
+
+    assert yaml.safe_load((out / "data.yaml").read_text(encoding="utf-8"))["names"] == {0: "no: helmet", 1: "#2"}
     (tmp_path / "notadataset").mkdir()
     with pytest.raises(FileExistsError):
         export_dataset([Session.open(s)], ["enemy", "corpse"], tmp_path / "notadataset")

@@ -112,6 +112,9 @@ def prelabel_rows(session: Session) -> list[ReportRow]:
         rows.append(ReportRow("Last prelabel run: frames without any detection", run.get("without_proposals"), "(whole run)"))
         rows.append(ReportRow("Last prelabel run: frames whose detections are all inside an ignore zone",
                               run.get("only_in_ignore_zone"), "(whole run)", "see the zone view"))
+        if run.get("unreadable"):
+            rows.append(ReportRow("Last prelabel run: frames that could not be read", run["unreadable"], "(whole run)",
+                                  "no proposals; the next prelabel run tries them again"))
         dropped = run.get("dropped_classes") or {}
         rows.append(ReportRow("Last prelabel run: detections of classes without a project class (dropped)",
                               sum(dropped.values()) if dropped else 0,

@@ -1749,6 +1749,9 @@ class MainWindow(WorkflowMixin, QMainWindow):
     def after_prelabel(self, stats: dict) -> None:
         lines = [f"{stats['done']} of {stats['frames']} frames, {stats['with_proposals']} with proposals, "
                  f"{stats['seconds']:.0f} s" + (" (cancelled)" if stats.get("cancelled") else "")]
+        if stats.get("unreadable"):
+            lines.append(f"Could not read {stats['unreadable']} frames (damaged files?): they have no proposals; "
+                         "the next run tries them again.")
         if "without_proposals" in stats:
             lines.append(f"No detection at all: {stats['without_proposals']} frames.")
             lines.append(f"Detections only inside an ignore zone (the frame looks empty): {stats['only_in_ignore_zone']} frames "
