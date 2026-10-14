@@ -10,7 +10,7 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .boxes import parse_rows
+from .boxes import parse_rows, read_rows
 from .index_cache import Cancelled
 from .split import balanced_block_split, choose_negatives, split_by_time
 from .session import Session
@@ -22,7 +22,7 @@ def max_conf(path: Path, ignore_zones=()) -> float:
 
     if not path.exists():
         return 0.0
-    confs = [conf for _, cx, cy, _, _, conf in parse_rows(path.read_text(encoding="utf-8"))
+    confs = [conf for _, cx, cy, _, _, conf in read_rows(path)
              if conf is not None and not in_zones(cx, cy, ignore_zones)]
     return max(confs, default=0.0)
 
@@ -64,7 +64,7 @@ def export_dataset(sessions: list[Session], classes: list[str], out: Path, neg_r
         raise ValueError("no labeled positives yet")
     chosen = choose_negatives(negs, round(len(pos) * neg_ratio), seed)
     if split == "blocks":
-        box_classes = {k: [r[0] for r in parse_rows(src[k][1].read_text(encoding="utf-8"))]
+        box_classes = {k: [r[0] for r in read_rows(src[k][1])]
                        for k in pos if src[k][1].exists()}
         train, val = balanced_block_split(pos + chosen, box_classes, val_fraction, seed, block_s, n_classes=len(classes))
     else:
@@ -87,7 +87,7 @@ def export_dataset(sessions: list[Session], classes: list[str], out: Path, neg_r
             for key in keys:
                 img, lab = src[key]
                 shutil.copy2(img, tmp / "images" / name / f"{key}{img.suffix}")
-                rows = lab.read_text(encoding="utf-8") if lab.exists() else ""
+                rows = lab.read_text(encoding="utf-8", errors="replace") if lab.exists() else ""
                 (tmp / "labels" / name / f"{key}.txt").write_text(rows, encoding="utf-8")
                 for cls, *_ in parse_rows(rows):
                     if 0 <= cls < len(classes):

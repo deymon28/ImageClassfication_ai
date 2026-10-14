@@ -739,7 +739,8 @@ class MainWindow(WorkflowMixin, QMainWindow):
         for i, (s, o) in enumerate(zip(self.sessions, rows)):
             if i < self.session_box.count():
                 done = o["pos"] + o["neg"] + o["skip"]
-                text = f"{s.name}  ({o['frames']} frames, {done} decided, {o['pos']} labeled)"
+                text = (f"{s.name}  ({o['frames']} frames, review.json damaged)" if o.get("damaged") else
+                        f"{s.name}  ({o['frames']} frames, {done} decided, {o['pos']} labeled)")
                 self.session_box.setItemText(i, text)
                 self.session_box.setItemData(i, text, Qt.ItemDataRole.ToolTipRole)
 

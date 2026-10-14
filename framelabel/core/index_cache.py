@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from framelabel.perf import app_data_dir
-from .boxes import parse_rows
+from .boxes import read_rows
 
 log = logging.getLogger("framelabel.cache")
 CACHE_VERSION = 1
@@ -93,7 +93,7 @@ def read_rows_cached(folder: Path, wanted: set[str] | None = None, progress=None
 
         def read(stem: str):
             try:
-                return stem, parse_rows((folder / f"{stem}.txt").read_text(encoding="utf-8"))
+                return stem, read_rows(folder / f"{stem}.txt")
             except OSError:  # vanished or locked meanwhile
                 return stem, None
 

@@ -154,7 +154,9 @@ class Project:
             self.path = Path(path)
         if self.path is None:
             raise ValueError("no project path")
-        self.path.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True), encoding="utf-8")
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        tmp.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True), encoding="utf-8")
+        tmp.replace(self.path)  # atomic: an interrupted save never leaves half a project file
 
 
 def folder_project(folder: Path, classes: list[str] | None = None) -> Project:
@@ -165,7 +167,11 @@ def folder_project(folder: Path, classes: list[str] | None = None) -> Project:
     names = classes
     if not names:
         for s in sessions:
-            if s.review_path.exists() and (r := Review(s.review_path)).classes:
+            try:
+                r = Review(s.review_path) if s.review_path.exists() else None
+            except ValueError:  # a damaged review.json: that session says why when it is opened
+                continue
+            if r is not None and r.classes:
                 names = r.classes
                 break
     names = names or ["object"]

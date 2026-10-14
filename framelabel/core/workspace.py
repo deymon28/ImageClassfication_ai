@@ -45,7 +45,8 @@ class Workspace:
         """(interface scores, index) read from disk without touching this workspace: safe to run in a thread, then
         hand the result to apply_reload on the GUI thread."""
         review = self.session.review(self.project.class_names)
-        ui = ui_scores(self.session, self.session.frames(), self.project.ui_zone, progress, cancelled)             if self.project.ui_zone else {}
+        ui = (ui_scores(self.session, self.session.frames(), self.project.ui_zone, progress, cancelled)
+              if self.project.ui_zone else {})
         return ui, build_index(self.session, review, self.project.ignore_zones, ui, progress, cancelled)
 
     def apply_reload(self, fresh: tuple[dict[str, float], list[FrameInfo]]) -> None:
@@ -99,12 +100,6 @@ class Workspace:
     def hidden_summary(self) -> str:
         """One line about frames that are filtered out of the normal views (see core.report)."""
         return hidden_line(self.index, self.capture, self.conf, self.project.ui_threshold)
-
-    def stats_line(self) -> str:
-        c = self.counts()
-        done = c["pos"] + c["neg"] + c["skip"]
-        return (f"reviewed {done}/{len(self.index)}  (objects {c['pos']}, empty {c['neg']}, skip {c['skip']}, "
-                f"queued {c['todo']})")
 
     # ---------------- frames
     def proposals(self, path: Path, w: int, h: int, min_conf: float | None = None) -> list[Box]:

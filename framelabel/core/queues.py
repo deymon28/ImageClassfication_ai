@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .boxes import iou_matrix, parse_rows, in_zones
+from .boxes import iou_matrix, read_rows, in_zones
 from .index_cache import read_rows_cached
 from .session import Review, Session
 
@@ -85,9 +85,9 @@ def frame_info_from_rows(path: Path, status: str | None, auto_rows, label_rows, 
 def frame_info(session: Session, path: Path, review: Review, ignore_zones=(), ui: float = 1.0) -> FrameInfo:
     """One frame's summary read straight from its files (used after a save; the whole session uses build_index)."""
     auto, lab = session.auto_path(path.stem), session.label_path(path.stem)
-    auto_rows = parse_rows(auto.read_text(encoding="utf-8")) if auto.exists() else None
+    auto_rows = read_rows(auto) if auto.exists() else None
     status = review.get(path.stem)
-    label_rows = parse_rows(lab.read_text(encoding="utf-8")) if status in ("pos", "neg") and lab.exists() else None
+    label_rows = read_rows(lab) if status in ("pos", "neg") and lab.exists() else None
     return frame_info_from_rows(path, status, auto_rows, label_rows, ignore_zones, ui)
 
 

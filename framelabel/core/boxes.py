@@ -1,6 +1,7 @@
 """Boxes in image pixels and the YOLO txt format (rows 'cls cx cy w h [conf]', normalized)."""
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -63,14 +64,20 @@ def in_zones(cx: float, cy: float, zones) -> bool:
 
 
 def parse_rows(text: str) -> list[tuple[int, float, float, float, float, float | None]]:
-    """YOLO rows -> (cls, cx, cy, w, h, conf|None). Polygon rows (more than 6 values) become their bounding box."""
+    """YOLO rows -> (cls, cx, cy, w, h, conf|None). Polygon rows (more than 6 values) become their bounding box. Rows
+    that are not numbers (a header, a truncated line) are skipped: one bad row must not make a session unreadable."""
     out = []
     for line in text.splitlines():
         p = line.split()
         if len(p) < 5:
             continue
-        cls = int(float(p[0]))
-        vals = list(map(float, p[1:]))
+        try:
+            vals = [float(v) for v in p]
+        except ValueError:
+            continue
+        if not all(math.isfinite(v) for v in vals):
+            continue
+        cls, vals = int(vals[0]), vals[1:]
         if len(vals) in (4, 5):
             conf = vals[4] if len(vals) == 5 else None
             out.append((cls, vals[0], vals[1], vals[2], vals[3], conf))
@@ -81,13 +88,18 @@ def parse_rows(text: str) -> list[tuple[int, float, float, float, float, float |
     return out
 
 
+def read_rows(path: Path) -> list[tuple[int, float, float, float, float, float | None]]:
+    """parse_rows of a label file; bytes that are not UTF-8 only cost their own row."""
+    return parse_rows(Path(path).read_text(encoding="utf-8", errors="replace"))
+
+
 def read_yolo(path: Path, w: int, h: int, min_conf: float = 0.0, ignore_zones=()) -> list[Box]:
     """Label file -> pixel boxes. Proposal rows (with conf) below min_conf or centred in an ignore zone are dropped;
     reviewed labels are returned as written."""
     if not path.exists():
         return []
     boxes = []
-    for cls, cx, cy, bw, bh, conf in parse_rows(path.read_text(encoding="utf-8")):
+    for cls, cx, cy, bw, bh, conf in read_rows(path):
         if conf is not None and (conf < min_conf or in_zones(cx, cy, ignore_zones)):
             continue
         boxes.append(Box((cx - bw / 2) * w, (cy - bh / 2) * h, (cx + bw / 2) * w, (cy + bh / 2) * h, cls, conf))

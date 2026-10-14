@@ -47,6 +47,31 @@ def test_polygon_rows_become_boxes():
     assert row[0] == 2 and np.allclose(row[1:5], [0.2, 0.4, 0.2, 0.4]) and row[5] is None
 
 
+def test_bad_rows_cost_only_themselves(tmp_path):
+    rows = parse_rows("class cx cy w h\n0 0.5 0.5 0.1 0.1\n1 0.2 nan 0.1 0.1\n1 0.3 0.3 0.1\n0 0.5 0.5 0.1 0.1 0.9")
+    assert [r[0] for r in rows] == [0, 0] and rows[1][5] == 0.9
+    (frames := tmp_path / "s" / "frames").mkdir(parents=True)
+    cv2.imwrite(str(frames / "a.jpg"), np.zeros((20, 20, 3), np.uint8))
+    s = Session.open(tmp_path / "s")
+    s.auto_dir.mkdir()
+    s.auto_path("a").write_bytes(b"\xff\xfe garbage\n0 0.5 0.5 0.2 0.2 0.8")
+    assert build_index(s, s.review())[0].confs == [0.8]  # the session opens, the good row is kept
+    assert len(read_yolo(s.auto_path("a"), 20, 20)) == 1
+
+
+def test_a_damaged_review_file_is_never_taken_for_an_empty_one(tmp_path):
+    from framelabel.core.session import session_overview
+
+    (frames := tmp_path / "s" / "frames").mkdir(parents=True)
+    cv2.imwrite(str(frames / "a.jpg"), np.zeros((20, 20, 3), np.uint8))
+    s = Session.open(tmp_path / "s")
+    s.review_path.write_text('{"version": 1, "status": {"a": "pos"', encoding="utf-8")  # cut off mid-write
+    with pytest.raises(ValueError, match="damaged"):
+        s.review()
+    assert session_overview(s)["damaged"] == 1 and folder_project(tmp_path / "s").class_names == ["object"]
+    assert s.review_path.read_text(encoding="utf-8").endswith('"pos"')  # left as it was, for the user to restore
+
+
 def test_box_corner_edge_hit_testing():
     big, small = Box(0, 0, 100, 100), Box(40, 40, 60, 60)
     assert box_at([big, small], 50, 50) == 1  # the inner box wins

@@ -20,7 +20,7 @@ import numpy as np
 import yaml
 from PIL import Image
 
-from framelabel.core.boxes import in_zones, iou_matrix, parse_rows
+from framelabel.core.boxes import in_zones, iou_matrix, read_rows
 from framelabel.core.session import IMG_EXT
 
 SIZE_BUCKETS = ((0, 20), (20, 50), (50, 10**9))  # box height in pixels at 1080p
@@ -74,7 +74,7 @@ def load_split(data_yaml: Path, split: str = "val") -> Split:
 
 
 def gt_boxes(lab: Path, w: int, h: int) -> tuple[np.ndarray, np.ndarray]:
-    rows = parse_rows(lab.read_text(encoding="utf-8")) if lab.exists() else []
+    rows = read_rows(lab) if lab.exists() else []
     if not rows:
         return np.zeros((0, 4)), np.zeros(0, int)
     a = np.array([(cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2) for _, cx, cy, bw, bh, _ in rows]) * [w, h, w, h]

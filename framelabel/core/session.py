@@ -27,7 +27,12 @@ class Review:
         self.extra: dict = {}
         self.status: dict[str, str] = {}
         if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict) or not isinstance(data.get("status", {}), dict):
+                    raise ValueError("not a review file")
+            except ValueError as e:  # never treated as empty: the next save would overwrite every decision
+                raise ValueError(f"{path} is damaged ({e}); fix or restore it before labeling this session") from e
             self.status = dict(data.get("status", {}))
             self.extra = {k: v for k, v in data.items() if k not in ("version", "classes", "status")}
             stored = data.get("classes")
@@ -135,8 +140,12 @@ class Session:
 
 
 def session_overview(session: Session) -> dict[str, int]:
-    """Frame count and review counts (pos / neg / skip / todo) of a session, without building its index."""
-    return {"frames": len(session.frames()), **session.review().counts()}
+    """Frame count and review counts (pos / neg / skip / todo) of a session, without building its index; `damaged` is 1
+    when its review.json cannot be read (the session then fails to open with the reason)."""
+    try:
+        return {"frames": len(session.frames()), "damaged": 0, **session.review().counts()}
+    except ValueError:
+        return {"frames": len(session.frames()), "damaged": 1, **{s: 0 for s in STATUSES}}
 
 
 def is_session_dir(path: Path) -> bool:
