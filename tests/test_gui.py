@@ -1823,3 +1823,67 @@ def test_right_click_on_the_box_table_deletes_a_box_at_once(app, project):
     w.canvas.undo()
     assert len(w.canvas.boxes) == 2
     w.close()
+
+
+def test_a_tick_in_triage_is_not_counted_as_a_decision_in_the_pace(app, project):
+    w = open_window(app, project)
+    w.grid.cols, w.grid.rows = 4, 2
+    w.grid.set_page(0)
+    first, second = w.queue[0].stem, w.queue[1].stem
+    w.grid.toggle(first, "people")
+    w.grid.toggle(second, "skip")
+    w.handle_key("Space")  # 1 marked (decided later, in the editor), 1 skipped, 4 empty
+    assert sum(n for _t, n in w.pace.events) == 5
+    w.undo_page()
+    assert sum(n for _t, n in w.pace.events) == 0
+    w.close()
+
+
+def test_project_settings_are_checked_before_they_apply(app, project, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    from framelabel.gui.dialogs import ProjectDialog
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: shown.append(a[2]))
+    path, s = project
+    proj = Project.load(path)
+    dlg = ProjectDialog(proj)
+    dlg.ignore.setText("0 0.7 0.1 x")
+    dlg.accept()
+    assert not dlg.result() and "is not a zone" in shown[-1]
+    dlg.ignore.setText("0 0.7 0.1 0.9; ")
+    dlg.classes.item(1, 0).setText("enemy")
+    dlg.accept()
+    assert "same name" in shown[-1]
+    dlg.classes.item(1, 0).setText("corpse")
+    dlg.accept()
+    assert dlg.result() and len(shown) == 2
+    dlg.apply()
+    assert proj.ignore_zones == [(0.0, 0.7, 0.1, 0.9)]
+
+
+def test_settings_of_a_folder_opened_without_a_project_file_are_saved_to_one(app, project, monkeypatch, tmp_path):
+    from PyQt6.QtWidgets import QFileDialog
+
+    from framelabel.gui import dialogs
+    from framelabel.gui.app import MainWindow
+
+    _path, s = project
+    w = MainWindow()
+    w.settings.clear()
+    open_and_wait(app, w, s)
+    assert w.project.path is None and w.project.class_names == ["object"]
+
+    def edit(dlg):
+        dlg.classes.item(0, 0).setText("enemy")
+        return True
+
+    monkeypatch.setattr(dialogs.ProjectDialog, "exec", edit)
+    target = tmp_path / "saved.yaml"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    w.project_settings()
+    wait_until(app, lambda: w.ws is not None and w.loader is None)
+    assert w.project.path == target and w.project.class_names == ["enemy"]
+    assert Project.load(target).class_names == ["enemy"]
+    w.close()

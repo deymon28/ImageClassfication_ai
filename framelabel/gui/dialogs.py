@@ -99,7 +99,8 @@ class PrelabelDialog(QDialog):
 
         cfg = PredictConfig(models=self.checked_models(), imgsz=int(self.imgsz.currentData()), conf=self.conf.value(),
                             tta=self.tta.isChecked(), max_vram_gb=self.vram.value(), batch=self.batch.value())
-        sessions = self.sessions if self.scope.currentData() == "all" else [self.sessions[self.current]]
+        current = self.current if 0 <= self.current < len(self.sessions) else 0
+        sessions = self.sessions if self.scope.currentData() == "all" else self.sessions[current:current + 1]
         return cfg, sessions, self.redo.isChecked()
 
 
@@ -428,12 +429,43 @@ class ProjectDialog(QDialog):
 
     @staticmethod
     def zones(text: str) -> list[tuple[float, ...]]:
+        """'x1 y1 x2 y2; ...' -> zones; ValueError naming the part that is not four numbers between 0 and 1."""
         out = []
         for part in text.split(";"):
-            vals = [float(v) for v in part.replace(",", " ").split()]
-            if len(vals) == 4:
-                out.append(tuple(vals))
+            if not part.strip():
+                continue
+            try:
+                vals = [float(v) for v in part.replace(",", " ").split()]
+            except ValueError:
+                vals = []
+            if len(vals) != 4 or not all(0 <= v <= 1 for v in vals) or vals[0] >= vals[2] or vals[1] >= vals[3]:
+                raise ValueError(f"'{part.strip()}' is not a zone: four numbers x1 y1 x2 y2 between 0 and 1, "
+                                 "x1 < x2 and y1 < y2")
+            out.append(tuple(vals))
         return out
+
+    def problem(self) -> str:
+        """Why the entered settings cannot be applied, '' when they can."""
+        names = [self.classes.item(r, 0).text().strip() for r in range(self.classes.rowCount())]
+        names = [n for n in names if n]
+        if not names:
+            return "The project needs at least one class."
+        if len(set(names)) != len(names):
+            return "Two classes have the same name; class names must differ."
+        try:
+            self.zones(self.ignore.text())
+            if len(self.zones(self.ui_zone.text())) > 1:
+                return "The interface-screen detection zone is one zone."
+        except ValueError as e:
+            return str(e)
+        return ""
+
+    def accept(self) -> None:
+        msg = self.problem()
+        if msg:
+            QMessageBox.warning(self, self.windowTitle(), msg)
+            return
+        super().accept()
 
     def apply(self) -> None:
         p = self.project

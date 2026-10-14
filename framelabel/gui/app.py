@@ -1458,8 +1458,8 @@ class MainWindow(WorkflowMixin, QMainWindow):
             self.undo_pages.append({"view": self.view_key, "stem": items[0].stem if items else None, "undo": undo,
                                     "marks": marks, "checked": newly})
             del self.undo_pages[:-20]
-        if undo:
-            self.record_decisions(len(undo))
+        if undo:  # a tick ('todo') is not a decision: the frame is decided later, in the editor
+            self.record_decisions(sum(1 for _old, _t, new in undo.values() if new != "todo"))
         for stem in stems:
             g.marks.pop(stem, None)  # saved: the tile shows the status now, not a pending mark
         self.schedule_counts()
@@ -1511,7 +1511,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
         entry = self.undo_pages.pop()
         self.commit_current()
         restored, left = self.ws.undo_page(entry["undo"])
-        self.pace.add(-len(restored))
+        self.pace.add(-sum(1 for stem in restored if entry["undo"][stem][2] != "todo"))
         self.ws.uncheck(entry["checked"])
         self.ws.check(entry.get("unchecked", []))
         self.schedule_counts()
@@ -1576,15 +1576,15 @@ class MainWindow(WorkflowMixin, QMainWindow):
             QTimer.singleShot(0, dlg.chosen.run)  # after the palette is gone, so focus returns to the work area
 
     def from_previous(self, track: bool) -> None:
-        """Boxes of the previous frame in time order (not the queue): copied, or tracked onto this frame."""
-        stems = list(self.ws.by_stem)
+        """Boxes of the previous labeled frame in time order (not the queue): copied, or tracked onto this frame."""
         i = self.ws.by_stem.get(self.cur_path.stem, 0)
         prev = next((self.ws.index[j] for j in range(i - 1, -1, -1) if self.ws.index[j].status == "pos"), None)
         if prev is None:
-            self.status_label.setText("No labeled frame before this one.")
+            self.toast("No labeled frame before this one")
             return
         img = imread(str(prev.path))
         if img is None:
+            self.toast(f"Cannot read {prev.path.name}")
             return
         h, w = img.shape[:2]
         boxes, _ = self.ws.load_boxes(prev.path, w, h)
@@ -1593,8 +1593,8 @@ class MainWindow(WorkflowMixin, QMainWindow):
             props = [b for b in self.ws.proposals(self.cur_path, c.iw, c.ih)]
             boxes = propagate(img, c.img, boxes, props)
         c.replace_boxes(c.boxes_copy() + boxes if not track else boxes)
-        self.status_label.setText(f"{len(boxes)} boxes from {prev.stem}" + (" (tracked)" if track else ""))
-        del stems
+        n = f"{len(boxes)} box{'es' if len(boxes) != 1 else ''}"
+        self.toast(f"{n} {'tracked' if track else 'copied'} from {prev.stem} ({self.keymap.first('undo')} undoes)")
 
     # ================================================================ SAM
     def ensure_sam(self, quiet: bool = False) -> bool:
@@ -1711,6 +1711,9 @@ class MainWindow(WorkflowMixin, QMainWindow):
 
         if self.project is None:
             return
+        if not self.sessions:
+            QMessageBox.information(self, "Prelabel", "The project's sources contain no frames.")
+            return
         dlg = PrelabelDialog(self.project, self.model_dirs(), self.sessions, self.session_box.currentIndex(), self)
         if not dlg.exec() or not self.gpu_preflight():
             return
@@ -1731,7 +1734,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
         if "without_proposals" in stats:
             lines.append(f"No detection at all: {stats['without_proposals']} frames.")
             lines.append(f"Detections only inside an ignore zone (the frame looks empty): {stats['only_in_ignore_zone']} frames "
-                         "(grid view 'Proposals hidden by ignore zones').")
+                         "(Triage > Only in ignore zone).")
             dropped = stats.get("dropped_classes") or {}
             if dropped:
                 lines.append("Dropped, no project class: " + ", ".join(f"{k} {v}" for k, v in list(dropped.items())[:6])
@@ -1818,11 +1821,19 @@ class MainWindow(WorkflowMixin, QMainWindow):
         if self.project is None:
             return
         dlg = ProjectDialog(self.project, self)
-        if dlg.exec():
-            dlg.apply()
-            if self.project.path:
-                self.project.save()
-            self.open_target(self.project.path or self.project.sources[0])
+        if not dlg.exec():
+            return
+        path = self.project.path
+        if path is None:  # a folder opened without a project file: the settings live in one, so it is written now
+            name, _ = QFileDialog.getSaveFileName(self, "Save the settings as a project file",
+                                                  str(ROOT / "projects" / f"{self.project.name}.yaml"), "Project (*.yaml)")
+            if not name:
+                self.toast("Not applied: a folder needs a project file to keep its settings")
+                return
+            path = Path(name)
+        dlg.apply()
+        self.project.save(path)
+        self.open_target(path)
 
     def session_report(self) -> None:
         """A window with counts of everything filtered out of the normal views and a view for each."""
