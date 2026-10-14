@@ -1887,3 +1887,46 @@ def test_settings_of_a_folder_opened_without_a_project_file_are_saved_to_one(app
     assert w.project.path == target and w.project.class_names == ["enemy"]
     assert Project.load(target).class_names == ["enemy"]
     w.close()
+
+def test_a_click_or_a_jitter_on_a_box_is_not_an_edit_but_a_drag_is(app):
+    from PyQt6.QtCore import QEvent, QPointF
+    from PyQt6.QtGui import QMouseEvent
+
+    from framelabel.core.boxes import Box
+    from framelabel.gui.canvas import Canvas
+
+    c = Canvas()
+    c.resize(640, 360)
+    c.show()
+    app.processEvents()
+    proposal = Box(100, 100, 200, 200, 0, 0.8)
+    c.set_frame(np.zeros((360, 640, 3), np.uint8), [proposal])
+    L, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+
+    def mouse(kind, x, y):
+        t = {"press": QEvent.Type.MouseButtonPress, "move": QEvent.Type.MouseMove,
+             "release": QEvent.Type.MouseButtonRelease}[kind]
+        e = QMouseEvent(t, QPointF(x, y), QPointF(x, y), none if kind == "move" else L,
+                        none if kind == "release" else L, Qt.KeyboardModifier.NoModifier)
+        {"press": c.mousePressEvent, "move": c.mouseMoveEvent, "release": c.mouseReleaseEvent}[kind](e)
+
+    def click(x, y, jitter=0):
+        mouse("press", x, y)
+        if jitter:
+            mouse("move", x + jitter, y)
+        mouse("release", x + jitter, y)
+
+    click(150, 150)  # selects the proposal
+    corner = c.view.to_widget(200, 200)
+    click(*corner)  # on its corner
+    click(150, 150, jitter=1)  # with the hand's jitter
+    click(400, 300, jitter=1)  # on empty space: no tiny box
+    assert not c.dirty and len(c.boxes) == 1 and c.boxes[0].conf == 0.8 and not c.history.can_undo
+    mouse("press", *corner)
+    mouse("move", corner[0] + 30, corner[1] + 20)
+    mouse("release", corner[0] + 30, corner[1] + 20)
+    assert c.dirty and c.boxes[0] is proposal and c.boxes[0].conf is None and c.boxes[0].x2 > 200
+    mouse("press", 400, 250)
+    mouse("move", 460, 320)
+    mouse("release", 460, 320)
+    assert len(c.boxes) == 2

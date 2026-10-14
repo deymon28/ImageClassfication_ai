@@ -20,6 +20,7 @@ from .theme import qc
 LOUPE_SIDE = 200          # loupe size on screen, px
 LOUPE_MIN, LOUPE_MAX = 1.5, 10.0
 LOUPE_MAX_SCALE = 40.0    # at most this many screen px per image px
+DRAG_PX = 3               # a press becomes a move / resize / new box only after the mouse travels this far on screen
 
 
 def loupe_window(ix: float, iy: float, view_scale: float, side: float, zoom: float,
@@ -30,6 +31,11 @@ def loupe_window(ix: float, iy: float, view_scale: float, side: float, zoom: flo
     k = min(max(view_scale * zoom, 1e-6), max_scale)
     half = side / 2 / k
     return ix - half, iy - half, ix + half, iy + half, k
+
+
+def normalize(b: Box) -> None:
+    """x1 < x2 and y1 < y2, changing the box itself (not a copy)."""
+    b.x1, b.y1, b.x2, b.y2 = b.xyxy()
 
 
 def to_qimage(img: np.ndarray) -> QImage:
@@ -367,9 +373,11 @@ class Canvas(QWidget):
             corner = corner_at(b, ix, iy, tol)
             edge = "" if corner >= 0 else edge_at(b, ix, iy, tol)
             if corner >= 0 or edge:
+                was_dirty = self.dirty
                 self.snapshot()
-                self.boxes[self.sel] = b
-                self.drag = {"kind": "resize", "corner": corner, "edge": edge, "moved": False}
+                normalize(self.boxes[self.sel])  # the corner / edge found above are those of the normalized box
+                self.drag = {"kind": "resize", "corner": corner, "edge": edge, "moved": False, "was_dirty": was_dirty,
+                             "press": pos}
                 return
         i = box_at(self.boxes, ix, iy)
         if i >= 0:
@@ -378,7 +386,8 @@ class Canvas(QWidget):
             self.selection_changed.emit(i)
             self.snapshot()
             b = self.boxes[i].norm()
-            self.drag = {"kind": "move", "start": (ix, iy, b.x1, b.y1, b.x2, b.y2), "moved": False, "was_dirty": was_dirty}
+            self.drag = {"kind": "move", "start": (ix, iy, b.x1, b.y1, b.x2, b.y2), "moved": False, "was_dirty": was_dirty,
+                         "press": pos}
             return
         if (j := box_at(self.ghosts, ix, iy)) >= 0:  # add a proposal the labels do not cover
             g = self.ghosts.pop(j)
@@ -390,7 +399,7 @@ class Canvas(QWidget):
             return
         self.sel = -1
         self.selection_changed.emit(-1)
-        self.drag = {"kind": "new", "start": (ix, iy), "box": Box(ix, iy, ix, iy, self.cls)}
+        self.drag = {"kind": "new", "start": (ix, iy), "box": Box(ix, iy, ix, iy, self.cls), "press": pos, "moved": False}
         self.update()
 
     def mouseMoveEvent(self, e) -> None:
@@ -404,6 +413,10 @@ class Canvas(QWidget):
             return
         ix, iy = self.img_pt(pos)
         d = self.drag
+        if d is not None and not d["moved"]:
+            if (pos - d["press"]).manhattanLength() < DRAG_PX:
+                return  # still a click: a hand's jitter must not move a box (and make the frame an edit)
+            d["moved"] = True
         if d is None:
             h = box_at(self.boxes, ix, iy)
             if h != self.hover:
@@ -451,13 +464,13 @@ class Canvas(QWidget):
             return
         if d["kind"] == "new":
             b = d["box"].norm()
-            if b.w >= 2 and b.h >= 2:
+            if d["moved"] and b.w >= 2 and b.h >= 2:
                 self.add_box(b)
                 if self.sam_on_draw:
                     self.sam_requested.emit(b)
             self.update()
             return
-        self.boxes[self.sel] = self.boxes[self.sel].norm()
+        normalize(self.boxes[self.sel])  # in place: a pending SAM answer finds its box by identity
         if not d["moved"]:  # a plain click: selection only, not an edit
             self.history.drop_last()
             self.dirty = d.get("was_dirty", self.dirty)
