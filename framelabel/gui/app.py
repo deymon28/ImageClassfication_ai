@@ -390,7 +390,10 @@ class MainWindow(WorkflowMixin, QMainWindow):
         self.conf_spin = QDoubleSpinBox()
         self.conf_spin.setRange(0.01, 0.99)
         self.conf_spin.setSingleStep(0.05)
-        self.conf_spin.setValue(float(self.settings.value("conf", 0.3)))
+        try:
+            self.conf_spin.setValue(float(self.settings.value("conf", 0.3)))
+        except (TypeError, ValueError):
+            self.conf_spin.setValue(0.3)
         self.conf_spin.setToolTip("The model's boxes at or above this confidence are the ones you edit; frames where none "
                                   "reaches it are 'model found nothing' (triage). Applied at once, remembered per project.")
         self.conf_spin.valueChanged.connect(self.on_conf_changed)
@@ -494,14 +497,20 @@ class MainWindow(WorkflowMixin, QMainWindow):
         a.setCheckable(checkable)
         if action:
             a.setData(action)  # key-driven: the command palette lists it from the key map, not from the menu
-        keys = self.keymap.map.get(action, []) if action else []
         if shortcut:
             a.setShortcut(QKeySequence(shortcut))
-        elif keys:
-            # keys are dispatched by the event filter (layout independent); the menu only shows the first one
-            a.setText(f"{text}\t{keys[0]}")
+        elif action:
+            a.setProperty("base_text", text)
+            self.show_menu_key(a)
         menu.addAction(a)
         return a
+
+    def show_menu_key(self, a: QAction) -> None:
+        """The first key of a key-driven menu item next to its text (keys are dispatched by the event filter, layout
+        independent, so the menu only shows it); called again when the shortcuts change."""
+        text, action = a.property("base_text"), a.data()
+        key = self.keymap.first(action) if action else ""
+        a.setText(f"{text}\t{key}" if key else text)
 
     def build_menus(self) -> None:
         mb = self.menuBar()
@@ -563,7 +572,12 @@ class MainWindow(WorkflowMixin, QMainWindow):
             gm.addAction(a)
             if f"{cols}x{rows}" == self.settings.value("grid", "3x3"):
                 a.setChecked(True)
-        c, r = map(int, str(self.settings.value("grid", "3x3")).split("x"))
+        try:
+            c, r = map(int, str(self.settings.value("grid", "3x3")).split("x"))
+        except ValueError:
+            c, r = 3, 3
+        if (c, r) not in GRID_SIZES:
+            c, r = 3, 3
         self.grid.cols, self.grid.rows = c, r
         self.context_bar.set_grid_size(c, r)
         self.grid_size_actions = grp
@@ -609,6 +623,10 @@ class MainWindow(WorkflowMixin, QMainWindow):
         """Key hints in the mode switch and the action buttons follow the keymap; then the context bar."""
         self.mode_switch.set_hint(self.keymap.first("switch_mode"))
         self.refresh_action_texts()
+        for menu in self.menuBar().findChildren(QMenu):
+            for a in menu.actions():
+                if a.property("base_text") is not None:
+                    self.show_menu_key(a)
         self.update_status()
 
     def mode_hint(self) -> str:

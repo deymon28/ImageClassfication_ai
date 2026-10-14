@@ -1951,3 +1951,20 @@ def test_a_key_that_would_do_two_things_in_one_mode_is_refused(app, monkeypatch)
     dlg.table.item(row, 2).setText("J")
     dlg.accept()
     assert dlg.result() and dlg.keymap.first("sam_fit") == "J"
+
+def test_menus_follow_the_shortcuts_and_bad_settings_do_not_stop_the_window(app, project):
+    from framelabel.gui.app import MainWindow, make_settings
+    from framelabel.gui.keys import Keymap
+
+    s = make_settings()  # the test's own INI file (the project fixture points FRAMELABEL_SETTINGS_FILE at it)
+    s.setValue("grid", "lots")
+    s.setValue("conf", "high")
+    s.sync()
+    w = MainWindow()
+    assert (w.grid.cols, w.grid.rows) == (3, 3) and w.conf_spin.value() == 0.3
+    item = next(a for m in w.menuBar().findChildren(type(w.recent_menu)) for a in m.actions() if a.data() == "sam_fit")
+    assert item.text().endswith("\tF")
+    w.keymap = Keymap({"sam_fit": ["J"]})
+    w.update_context()
+    assert item.text().endswith("\tJ")
+    w.close()
