@@ -15,7 +15,7 @@ from framelabel.core.project import PALETTE, ClassDef, Project
 from framelabel.core.report import ReportRow
 from framelabel.core.session import Session
 from framelabel.ml.models import scan_models
-from .keys import ACTION_GROUPS, ACTION_INFO, DEFAULT_KEYMAP, Keymap
+from .keys import ACTION_GROUPS, ACTION_INFO, DEFAULT_KEYMAP, FIXED_KEYS, Keymap, conflicts
 from .workers import Job, start_job, stop_jobs
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -528,7 +528,13 @@ class KeymapDialog(QDialog):
         return out
 
     def accept(self) -> None:
-        self.keymap = Keymap(self.overrides())
+        keymap = Keymap(self.overrides())
+        clashes = conflicts(keymap.map)
+        if clashes:
+            QMessageBox.warning(self, "Keyboard shortcuts", "A key can do one thing in each mode:\n\n"
+                                + "\n".join(clashes[:12]))
+            return
+        self.keymap = keymap
         super().accept()
 
 
@@ -547,7 +553,9 @@ class HelpDialog(QDialog):
         "Editor": [("Drag on empty space", "new box"), ("Drag a box / corner / edge", "move / resize"),
                    ("Right click", "delete the box under the cursor"), ("Wheel", "zoom at the cursor"),
                    ("Middle drag", "pan"), ("Alt+click", "box from a point with SAM"),
-                   ("Click a faint box", "accept that weak proposal (when weak proposals are shown, W)")],
+                   ("Click a faint box", "accept that weak proposal (when weak proposals are shown, W)"),
+                   ("Click an amber dashed box", "add what the model sees and the labels do not"),
+                   ("Right click a row of the box list", "delete that box (Ctrl+Z brings it back)")],
     }
 
     def __init__(self, keymap: Keymap, parent=None):
@@ -588,7 +596,7 @@ class HelpDialog(QDialog):
             if group in cls.MOUSE:
                 out.append(f"<h3>Mouse: {group.lower()}</h3>" + table(cls.MOUSE[group]))
         out.append("<h3>More keys</h3>" + table([("1-9", "select the class for new boxes (editor)"),
-                                                 ("W", "show / hide weak proposals"), ("Esc", "close a preview, leave fullscreen")]))
+                                                 ("W", FIXED_KEYS["W"]), ("Esc", FIXED_KEYS["Esc"])]))
         return "".join(out)
 
 

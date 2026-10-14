@@ -98,6 +98,25 @@ ACTION_INFO: dict[str, tuple[str, str]] = {
     "goto_frame": ("Everywhere", "Go to a frame by number or name"),
 }
 ACTION_GROUPS = ("Everywhere", "Grid", "Editor")
+FIXED_KEYS = {**{str(i): "select class " + str(i) for i in range(1, 10)}, "W": "show / hide weak proposals",
+              "Esc": "close a preview, leave fullscreen"}  # handled before the keymap, so they cannot be bound
+
+
+def conflicts(keymap: dict[str, list[str]]) -> list[str]:
+    """Keys that would do two things in the same mode (or that a fixed key already takes), as readable lines. A key may
+    mean one thing in the grid and another in the editor (Space saves the page there and the frame here)."""
+    out, seen = [], {}
+    for action, keys in keymap.items():
+        group, text = ACTION_INFO.get(action, ("Editor", action))
+        for key in keys:
+            if key in FIXED_KEYS:
+                out.append(f"{key}: already '{FIXED_KEYS[key]}', so it cannot also '{text}'")
+                continue
+            for other, other_group, other_text in seen.get(key, []):
+                if "Everywhere" in (group, other_group) or group == other_group:
+                    out.append(f"{key}: both '{other_text}' and '{text}'")
+            seen.setdefault(key, []).append((action, group, text))
+    return out
 
 _NAMED = {
     Qt.Key.Key_Space: "Space", Qt.Key.Key_Return: "Return", Qt.Key.Key_Enter: "Enter", Qt.Key.Key_Tab: "Tab",

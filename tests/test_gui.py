@@ -1930,3 +1930,24 @@ def test_a_click_or_a_jitter_on_a_box_is_not_an_edit_but_a_drag_is(app):
     mouse("move", 460, 320)
     mouse("release", 460, 320)
     assert len(c.boxes) == 2
+
+def test_a_key_that_would_do_two_things_in_one_mode_is_refused(app, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+
+    from framelabel.gui.dialogs import KeymapDialog
+    from framelabel.gui.keys import DEFAULT_KEYMAP, Keymap, conflicts
+
+    assert conflicts(DEFAULT_KEYMAP) == []  # Space saves the page in the grid and the frame in the editor: no clash
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: shown.append(a[2]))
+    dlg = KeymapDialog(Keymap())
+    row = dlg.actions.index("sam_fit")
+    dlg.table.item(row, 2).setText("E")  # E already saves as empty in the editor
+    dlg.accept()
+    assert not dlg.result() and "E: both" in shown[-1]
+    dlg.table.item(row, 2).setText("W")  # a fixed key
+    dlg.accept()
+    assert "W: already" in shown[-1]
+    dlg.table.item(row, 2).setText("J")
+    dlg.accept()
+    assert dlg.result() and dlg.keymap.first("sam_fit") == "J"
