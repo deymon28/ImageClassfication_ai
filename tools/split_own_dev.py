@@ -18,7 +18,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from framelabel.core.boxes import parse_rows  # noqa: E402
+from framelabel.core.boxes import read_rows  # noqa: E402
 from framelabel.core.session import IMG_EXT  # noqa: E402
 from framelabel.core.split import balanced_block_split  # noqa: E402
 
@@ -33,7 +33,7 @@ def main() -> None:
     cfg = yaml.safe_load((args.own / "data.yaml").read_text(encoding="utf-8"))
     names = cfg["names"]
     images = {p.stem: p.resolve() for p in (args.own / "images/train").iterdir() if p.suffix.lower() in IMG_EXT}
-    classes = {k: [r[0] for r in parse_rows((args.own / "labels/train" / f"{k}.txt").read_text(encoding="utf-8"))]
+    classes = {k: [r[0] for r in read_rows(args.own / "labels/train" / f"{k}.txt")]
                for k in images if (args.own / "labels/train" / f"{k}.txt").exists()}
     train, dev = balanced_block_split(sorted(images), classes, args.dev_fraction, args.seed, n_classes=len(names))
     if args.out.exists():

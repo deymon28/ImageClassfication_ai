@@ -25,7 +25,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from framelabel.core.boxes import parse_rows  # noqa: E402
+from framelabel.core.boxes import read_rows  # noqa: E402
 from framelabel.core.images import imread  # noqa: E402
 from framelabel.core.session import IMG_EXT  # noqa: E402
 
@@ -48,7 +48,7 @@ def class_ids(names: list[str], keep) -> set[int]:
 
 def person_rows(label: Path, ok: set[int], min_px: float, w: int, h: int) -> tuple[list[str], int]:
     """Kept rows as '0 cx cy w h' and the number of dropped rows."""
-    rows = parse_rows(label.read_text(encoding="utf-8")) if label.exists() else []
+    rows = read_rows(label) if label.exists() else []
     kept, dropped = [], 0
     for cls, cx, cy, bw, bh, _ in rows:
         if cls in ok and bw * w >= min_px and bh * h >= min_px:
@@ -124,7 +124,7 @@ def main() -> None:
     if args.own:
         for img_path in sorted((args.own / "images/train").iterdir()):
             lab = args.own / "labels/train" / f"{img_path.stem}.txt"
-            rows = parse_rows(lab.read_text(encoding="utf-8")) if lab.exists() else []
+            rows = read_rows(lab) if lab.exists() else []
             kept = [f"0 {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}" for _, cx, cy, bw, bh, _ in rows]
             splits.append(("train", (img_path, kept, f"own_{img_path.stem}")))
             own += 1
