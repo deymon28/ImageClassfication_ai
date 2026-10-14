@@ -297,8 +297,32 @@ def test_ui_scores_flag_interface_frames(tmp_path):
     frames = s.frames()
     sc = ui_scores(s, frames, HUD[0])
     assert all(sc[p.stem] > 0.6 for p in frames[:12]) and all(sc[p.stem] < 0.3 for p in frames[12:])
-    cached = json.loads((s.root / "ui_scores.json").read_text())
-    assert cached["_zone"] == list(HUD[0]) and ui_scores(s, frames, HUD[0]) == sc
+    assert not (s.root / "ui_scores.json").exists()  # nothing is written into the session
+    from framelabel.core.index_cache import cache_dir
+
+    (cached,) = cache_dir().glob("ui_scores_*.json")
+    assert json.loads(cached.read_text())["_zone"] == list(HUD[0]) and ui_scores(s, frames, HUD[0]) == sc
+
+
+def test_ui_scores_take_over_a_session_file_of_the_same_zone_and_never_touch_it(tmp_path, monkeypatch):
+    import framelabel.core.uiscreen as uiscreen
+
+    s = Session.open(_ui_session(tmp_path))
+    frames = s.frames()
+    legacy = {p.stem: 0.5 for p in frames}  # what screendet's label_frames.py writes: no '_zone', its HUD zone
+    old = s.root / "ui_scores.json"
+    old.write_text(json.dumps(legacy), encoding="utf-8")
+    before = old.stat().st_mtime_ns
+    read = []
+    with monkeypatch.context() as m:  # (monkeypatch.undo() would also undo conftest's cache folder)
+        m.setattr(uiscreen, "imread", lambda *a: read.append(a))
+        assert ui_scores(s, frames, HUD[0]) == legacy and read == []  # reused, nothing recomputed
+    other = ui_scores(s, frames, (0.5, 0.5, 0.6, 0.6))  # another project's zone never takes those scores
+    assert other != legacy and len(other) == len(frames)
+    assert old.stat().st_mtime_ns == before and json.loads(old.read_text()) == legacy  # the session's file as it was
+    old.unlink()
+    assert ui_scores(s, frames, HUD[0]) == legacy  # the cache of the first zone was kept apart
+    assert not old.exists()
 
 
 def _project(root):

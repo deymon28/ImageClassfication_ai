@@ -114,7 +114,8 @@ class Session:
 
     @property
     def cache_dir(self) -> Path:
-        """Where derived per-session data (interface-screen scores) is cached."""
+        """The folder that identifies the session's derived data (the key of its interface-screen cache in the app's
+        cache folder), and where older versions kept ui_scores.json (now only read)."""
         return self.root if self.layout != "yolo" else self.review_path.parent
 
     def frames(self) -> list[Path]:

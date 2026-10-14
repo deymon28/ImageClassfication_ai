@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -53,29 +54,52 @@ def _score(crop, tmpl: np.ndarray) -> float:
     return float(cv2.matchTemplate(crop, tmpl, cv2.TM_CCOEFF_NORMED).max())
 
 
+LEGACY_ZONE = [0.0, 0.75, 0.07, 0.92]  # the zone of screendet's label_frames.py, whose ui_scores.json has no '_zone'
+
+
+def _cache_key(session: Session, zone) -> str:
+    """One cache per session folder and zone: projects that share a session and a zone share it, another zone never
+    sees it."""
+    return hashlib.sha1(f"{str(session.cache_dir.resolve()).lower()}{zone!r}".encode()).hexdigest()[:20]
+
+
 def _template_path(session: Session, zone) -> Path:
-    key = f"{str(session.cache_dir.resolve()).lower()}{zone!r}"
-    return cache_dir() / f"ui_tmpl_{hashlib.sha1(key.encode()).hexdigest()[:20]}.npy"
+    return cache_dir() / f"ui_tmpl_{_cache_key(session, zone)}.npy"
+
+
+def _scores_path(session: Session, zone) -> Path:
+    return cache_dir() / f"ui_scores_{_cache_key(session, zone)}.json"
+
+
+def _read_scores(path: Path, zone, zone_if_missing=None) -> dict[str, float]:
+    """{stem: score} of a scores file made for `zone`; {} when it is missing, unreadable or made for another zone (a file
+    without '_zone' counts as made for `zone_if_missing`)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("_zone", zone_if_missing) != zone:
+        return {}
+    return {k: float(v) for k, v in data.items() if not k.startswith("_") and isinstance(v, (int, float))}
 
 
 def ui_scores(session: Session, frames: list[Path], zone, progress=None, cancelled=None) -> dict[str, float]:
     """Similarity of each frame's zone to the session's median zone (~1 in gameplay, ~0 on interface screens).
-    Cached in <session>/ui_scores.json (a flat {stem: score} map plus '_zone'). When only frames were added, just
-    those are scored against the median template saved in the local cache; otherwise everything is recomputed.
+    Cached in the app's cache folder per session and zone (a flat {stem: score} map plus '_zone'); nothing is written
+    into the session. A <session>/ui_scores.json made for the same zone (by an older framelabel, or by screendet's
+    label_frames.py) is read as a start and left as it is. When only frames were added, just those are scored against
+    the median template saved in the cache; otherwise everything is recomputed.
     `progress(i, n, msg)` and `cancelled()` are optional; cancelling raises index_cache.Cancelled."""
-    cache = session.cache_dir / "ui_scores.json"
     zone = [float(v) for v in zone]
-    scores: dict = {}
-    if cache.exists():
-        try:
-            scores = json.loads(cache.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            scores = {}
-        if not isinstance(scores, dict) or scores.get("_zone", zone) != zone:  # caches without '_zone' were made with the default zone
-            scores = {}
+    cache = _scores_path(session, zone)
+    scores = _read_scores(cache, zone)
+    if not scores:
+        scores = _read_scores(session.cache_dir / "ui_scores.json", zone, LEGACY_ZONE)
     missing = [p for p in frames if p.stem not in scores]
     if scores and not missing:
-        return {k: v for k, v in scores.items() if not k.startswith("_")}
+        if not cache.exists():
+            _write_scores(cache, scores, zone)  # taken over from the session's file: from now on read from the cache
+        return scores
     if not frames:
         return {}
     tmpl_file = _template_path(session, zone)
@@ -103,12 +127,17 @@ def ui_scores(session: Session, frames: list[Path], zone, progress=None, cancell
             np.save(tmpl_file, tmpl)
         except OSError:
             pass
+    _write_scores(cache, scores, zone)
+    return scores
+
+
+def _write_scores(path: Path, scores: dict[str, float], zone) -> None:
+    """Atomically; a cache that cannot be written (a read-only app folder) only costs a recount next time."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cache.with_suffix(".tmp")
-        tmp.write_text(json.dumps({**{k: v for k, v in scores.items() if not k.startswith("_")}, "_zone": zone}),
-                       encoding="utf-8")
-        tmp.replace(cache)
-    except OSError:
-        pass
-    return {k: v for k, v in scores.items() if not k.startswith("_")}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps({**scores, "_zone": zone}), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as e:
+        log.warning("cannot write the interface-screen cache %s: %s", path.name, e)
+        tmp.unlink(missing_ok=True)

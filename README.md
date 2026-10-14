@@ -188,7 +188,7 @@ Nothing that can take longer than ~50 ms runs on the window's thread:
 
 * Opening a session (listing, parsed proposal/label files, interface-screen scores) runs in a background thread with
   a progress bar. Parsed label rows are cached in `%LOCALAPPDATA%\framelabel\cache` (keyed by file time and size, so
-  only changed files are re-read), and interface-screen scores of newly captured frames are computed on their own.
+  only changed files are re-read), and interface-screen scores of newly captured frames are computed on their own. The scores are cached per session and HUD zone in the same folder, never in the session (projects with different zones keep apart; an existing `<session>/ui_scores.json` of the same zone, also the one screendet's `label_frames.py` writes, is read once and left as it is).
   A 7000-frame session opens in about half a second with a warm cache.
 * Prelabel runs as a child process (`python -m framelabel prelabel ... --progress-json`), so torch is not loaded into
   the window and a CUDA failure cannot close it. SAM runs in its own thread. Export (and the export before a retrain)
