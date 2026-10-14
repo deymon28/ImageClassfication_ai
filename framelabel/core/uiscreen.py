@@ -14,6 +14,7 @@ import numpy as np
 
 from . import index_cache
 from .index_cache import Cancelled, cache_dir
+from .images import imread
 from .session import Session
 
 log = logging.getLogger("framelabel.ui")
@@ -26,9 +27,9 @@ def zone_crop(gray: np.ndarray, zone) -> np.ndarray:
 
 
 def _read_crops(frames: list[Path], zone, progress, cancelled, workers: int | None = None) -> dict[str, np.ndarray | None]:
-    """HUD-zone crops of the frames (a reduced grayscale decode, in parallel: cv2.imread releases the GIL)."""
+    """HUD-zone crops of the frames (a reduced grayscale decode, in parallel: decoding releases the GIL)."""
     def read(p: Path):
-        img = cv2.imread(str(p), cv2.IMREAD_REDUCED_GRAYSCALE_2)
+        img = imread(str(p), cv2.IMREAD_REDUCED_GRAYSCALE_2)
         return zone_crop(img, zone) if img is not None else None
 
     out: dict[str, np.ndarray | None] = {}

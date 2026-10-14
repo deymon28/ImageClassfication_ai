@@ -10,6 +10,7 @@ from PyQt6.QtCore import QEvent, QObject, QPoint, QRectF, QTimer, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QApplication, QLabel, QListView, QWidget
 
+from framelabel.core.images import imread
 from .canvas import to_qimage
 from .theme import qc
 
@@ -79,7 +80,7 @@ class FramePeek(QObject):
         if hit is not None:
             self.pix.move_to_end(key)
             return hit
-        img = cv2.imread(str(fi.path), cv2.IMREAD_REDUCED_COLOR_2)
+        img = imread(str(fi.path), cv2.IMREAD_REDUCED_COLOR_2)
         if img is None:
             return None
         dpr = self.label.devicePixelRatioF() or 1.0

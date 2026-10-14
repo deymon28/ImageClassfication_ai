@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import QToolTip, QWidget
 
 from framelabel.core.queues import FrameInfo, unmatched_proposals
 from framelabel.core.view import View
+from framelabel.core.images import imread
 from .canvas import to_qimage
 from .theme import qc
 
@@ -128,7 +129,7 @@ class Grid(QWidget):
         self.overlay_cache.clear()
         self.clear_cache()
         if items:
-            img = cv2.imread(str(items[0].path), cv2.IMREAD_REDUCED_COLOR_4)
+            img = imread(str(items[0].path), cv2.IMREAD_REDUCED_COLOR_4)
             if img is not None:
                 self.aspect = img.shape[:2]
         self.initial_mark = initial_mark or (lambda fi: None)
@@ -287,7 +288,7 @@ class Grid(QWidget):
     def _load(self, page: int, tw: int, th: int) -> list[QImage]:
         out = []
         for fi in self.page_items(page):
-            img = cv2.imread(str(fi.path), cv2.IMREAD_REDUCED_COLOR_2 if tw <= self.aspect[1] * 2 else cv2.IMREAD_COLOR)
+            img = imread(str(fi.path), cv2.IMREAD_REDUCED_COLOR_2 if tw <= self.aspect[1] * 2 else cv2.IMREAD_COLOR)
             if img is None:
                 img = np.zeros((th, tw, 3), np.uint8)
             out.append(to_qimage(cv2.resize(img, (tw, th), interpolation=cv2.INTER_AREA)))
@@ -488,7 +489,7 @@ class Grid(QWidget):
 
     # ---------------- preview
     def open_preview(self, fi: FrameInfo) -> None:
-        img = cv2.imread(str(fi.path))
+        img = imread(str(fi.path))
         if img is None:
             return
         self.preview, self.preview_img, self.preview_q = fi, img, to_qimage(img)

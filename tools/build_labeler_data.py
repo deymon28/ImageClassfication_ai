@@ -26,6 +26,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from framelabel.core.boxes import parse_rows  # noqa: E402
+from framelabel.core.images import imread  # noqa: E402
 from framelabel.core.session import IMG_EXT  # noqa: E402
 
 RF_RE = re.compile(r"^(.*?)_(?:jpg|jpeg|png|JPG|PNG)\.rf\.[0-9a-f]+$")  # Roboflow '<orig>_jpg.rf.<hash>'
@@ -92,7 +93,7 @@ def main() -> None:
                 if drop_prefixes and img_path.name.startswith(drop_prefixes):
                     stats["other_game"] += 1
                     continue
-                img = cv2.imread(str(img_path))
+                img = imread(str(img_path))
                 if img is None:
                     continue
                 h, w = img.shape[:2]

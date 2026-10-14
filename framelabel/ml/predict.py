@@ -16,6 +16,7 @@ import numpy as np
 
 from framelabel.core.boxes import in_zones
 from framelabel.core.session import Session
+from framelabel.core.images import imread
 from .fusion import weighted_boxes_fusion
 from .guard import cap_vram
 
@@ -129,7 +130,7 @@ def prelabel_sessions(sessions: list[Session], cfg: PredictConfig, redo: bool = 
             stats["cancelled"] = True
             break
         chunk = todo[start:start + cfg.batch]
-        images = [cv2.imread(str(p)) for _, p in chunk]
+        images = [imread(str(p)) for _, p in chunk]
         ok = [(sp, im) for sp, im in zip(chunk, images) if im is not None]
         results = pred.predict([im for _, im in ok]) if ok else []
         for ((s, p), im), (xyxy, conf, cls) in zip(ok, results):

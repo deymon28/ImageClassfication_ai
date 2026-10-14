@@ -21,6 +21,7 @@ import yaml
 from PIL import Image
 
 from framelabel.core.boxes import in_zones, iou_matrix, read_rows
+from framelabel.core.images import imread
 from framelabel.core.session import IMG_EXT
 
 SIZE_BUCKETS = ((0, 20), (20, 50), (50, 10**9))  # box height in pixels at 1080p
@@ -157,7 +158,7 @@ def predict_split(split: Split, models: list[Path], imgsz: int, tta: bool, batch
     out = {}
     for start in range(0, len(split.images), batch):
         chunk = split.images[start:start + batch]
-        ims = [cv2.imread(str(p)) for p in chunk]
+        ims = [imread(str(p)) for p in chunk]
         for p, r in zip(chunk, pred.predict(ims)):
             out[p.stem] = r
         if progress:

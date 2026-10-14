@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (QMenu, QAbstractSpinBox, QApplication, QCheckBox, Q
                              QWidget)
 
 from framelabel.core.boxes import Box, grow_box
+from framelabel.core.images import imread
 from framelabel.core.project import Project, folder_project
 from framelabel.core.propagate import propagate
 from framelabel.core.queues import FrameInfo
@@ -60,7 +61,7 @@ ARROW_TEXT = {k: t for k, t, _h in ARROW_MODES}
 
 def read_frame(path: Path):
     """(image, QImage) or (None, None); runs in the prefetch threads (QImage, unlike QPixmap, is safe there)."""
-    img = cv2.imread(str(path))
+    img = imread(str(path))
     return (img, to_qimage(img)) if img is not None else (None, None)
 
 
@@ -1582,7 +1583,7 @@ class MainWindow(WorkflowMixin, QMainWindow):
         if prev is None:
             self.status_label.setText("No labeled frame before this one.")
             return
-        img = cv2.imread(str(prev.path))
+        img = imread(str(prev.path))
         if img is None:
             return
         h, w = img.shape[:2]

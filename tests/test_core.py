@@ -59,6 +59,18 @@ def test_bad_rows_cost_only_themselves(tmp_path):
     assert len(read_yolo(s.auto_path("a"), 20, 20)) == 1
 
 
+def test_frames_in_a_non_ascii_folder_are_read(tmp_path):
+    from framelabel.core.images import imread
+
+    (frames := tmp_path / "кадры" / "frames").mkdir(parents=True)
+    ok, buf = cv2.imencode(".jpg", np.full((40, 60, 3), 200, np.uint8))
+    (frames / "a.jpg").write_bytes(buf.tobytes())
+    assert imread(frames / "a.jpg").shape == (40, 60, 3)
+    assert imread(frames / "a.jpg", cv2.IMREAD_REDUCED_GRAYSCALE_2).shape == (20, 30)
+    (frames / "b.jpg").write_bytes(b"not a jpeg")
+    assert imread(frames / "b.jpg") is None and imread(frames / "missing.jpg") is None
+
+
 def test_a_damaged_review_file_is_never_taken_for_an_empty_one(tmp_path):
     from framelabel.core.session import session_overview
 
@@ -435,9 +447,11 @@ def test_ui_scores_incremental(tmp_path, monkeypatch):
     menu = np.full((360, 640, 3), 15, np.uint8)
     cv2.imwrite(str(s.images_dir / "109998_000.jpg"), game)
     cv2.imwrite(str(s.images_dir / "109999_000.jpg"), menu)
+    import framelabel.core.uiscreen as uiscreen
+
     read = []
-    real = cv2.imread
-    monkeypatch.setattr(cv2, "imread", lambda path, *a: (read.append(path), real(path, *a))[1])
+    real = uiscreen.imread
+    monkeypatch.setattr(uiscreen, "imread", lambda path, *a: (read.append(str(path)), real(path, *a))[1])
     again = ui_scores(s, s.frames(), HUD[0])
     assert sorted(p.split("\\")[-1].split("/")[-1] for p in read) == ["109998_000.jpg", "109999_000.jpg"]
     assert again["109998_000"] > 0.6 and again["109999_000"] < 0.3
