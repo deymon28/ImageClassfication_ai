@@ -88,6 +88,11 @@ OBJECTS, SKIP, EMPTY); hovering a tile gives the details (boxes, proposals, inte
   checked frames leave Review. It is a personal note kept in the app data folder, never in the session. Saving a frame
   again makes it look-at-able again.
 * **Ctrl+K** opens a palette that finds views, actions (with their keys, which teaches them) and frames by typing.
+* **A click is never an edit**: in the editor a press becomes a move, a resize or a new box only after the mouse travels a
+  few pixels, so selecting a proposal (or a hand's jitter while doing it) does not make the frame "edited" and saved
+  on the next step.
+* **One key, one meaning per mode**: the shortcut settings refuse a key that two actions of the same mode would share
+  (a key may mean one thing in the grid and another in the editor, like Space).
 
 ## Look
 
