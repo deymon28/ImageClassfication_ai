@@ -71,7 +71,18 @@ def load_split(data_yaml: Path, split: str = "val") -> Split:
     names = cfg["names"]
     names = [names[i] for i in sorted(names)] if isinstance(names, dict) else list(names)
     images = sorted(p for p in img_dir.iterdir() if p.suffix.lower() in IMG_EXT)
-    return Split(images, Path(str(img_dir).replace("images", "labels")), names)
+    return Split(images, labels_dir_for(img_dir), names)
+
+
+def labels_dir_for(img_dir: Path) -> Path:
+    """The YOLO labels folder of an images folder: the last 'images' part of the path becomes 'labels' (as ultralytics
+    does), so an 'images' elsewhere in the path (D:/images/own/images/val) is left alone."""
+    parts = list(Path(img_dir).parts)
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i] == "images":
+            parts[i] = "labels"
+            return Path(*parts)
+    return Path(img_dir) / "labels"
 
 
 def gt_boxes(lab: Path, w: int, h: int) -> tuple[np.ndarray, np.ndarray]:
@@ -158,8 +169,11 @@ def predict_split(split: Split, models: list[Path], imgsz: int, tta: bool, batch
     out = {}
     for start in range(0, len(split.images), batch):
         chunk = split.images[start:start + batch]
-        ims = [imread(str(p)) for p in chunk]
-        for p, r in zip(chunk, pred.predict(ims)):
+        ims = [(p, imread(str(p))) for p in chunk]
+        bad = [p.name for p, im in ims if im is None]
+        if bad:
+            raise ValueError(f"cannot read {', '.join(bad)}: an evaluation must cover every image of the split")
+        for (p, _im), r in zip(ims, pred.predict([im for _p, im in ims])):
             out[p.stem] = r
         if progress:
             progress(min(start + batch, len(split.images)), len(split.images))

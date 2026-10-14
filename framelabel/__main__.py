@@ -93,10 +93,14 @@ def cmd_export(a) -> None:
     out = a.out or proj.export_out
     if out is None:
         sys.exit("no output folder: pass --out or set export.out in the project")
-    res = export_dataset(sessions, proj.class_names, out, a.neg_ratio if a.neg_ratio is not None else exp.get("neg_ratio", 0.15),
-                         a.val_fraction if a.val_fraction is not None else exp.get("val_fraction", 0.15),
-                         a.seed if a.seed is not None else exp.get("seed", 0), a.split or exp.get("split", "blocks"),
-                         a.block_s or exp.get("block_s", 120.0), proj.ignore_zones)
+    try:
+        res = export_dataset(sessions, proj.class_names, out,
+                             a.neg_ratio if a.neg_ratio is not None else exp.get("neg_ratio", 0.15),
+                             a.val_fraction if a.val_fraction is not None else exp.get("val_fraction", 0.15),
+                             a.seed if a.seed is not None else exp.get("seed", 0), a.split or exp.get("split", "blocks"),
+                             a.block_s or exp.get("block_s", 120.0), proj.ignore_zones)
+    except (ValueError, FileExistsError) as e:  # nothing labeled yet, or a folder that is not an exported dataset
+        sys.exit(f"export: {e}")
     print(res.summary(proj.class_names))
 
 
@@ -119,11 +123,12 @@ def cmd_eval(a) -> None:
     from framelabel.ml import evaluate as ev
     from framelabel.ml.guard import GuardError, check_gpu_allowed
 
+    proj = Project.load(a.project) if a.project else None
     try:
-        check_gpu_allowed(["UAGame.exe"], a.force)
+        check_gpu_allowed((proj.game_processes if proj else None) or ["UAGame.exe"], a.force)
     except GuardError as e:
         sys.exit(str(e))
-    zones = Project.load(a.project).ignore_zones if a.project else []
+    zones = proj.ignore_zones if proj else []
     split = ev.load_split(a.data, a.split)
     report = {"data": str(a.data), "split": a.split, "ignore_zones": zones, "setups": {}}
     for text in a.setup:

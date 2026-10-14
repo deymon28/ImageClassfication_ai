@@ -27,6 +27,15 @@ def test_rows_for_clips_and_filters():
     assert tta_sizes(1280, True) == [1280, 1664] and tta_sizes(1280, False) == [1280]
 
 
+def test_labels_folder_of_a_split_changes_only_the_last_images_part():
+    from pathlib import Path
+
+    from framelabel.ml.evaluate import labels_dir_for
+
+    assert labels_dir_for(Path("D:/images/own/images/val")) == Path("D:/images/own/labels/val")
+    assert labels_dir_for(Path("D:/data/images_hq/images/val")) == Path("D:/data/images_hq/labels/val")
+
+
 def test_match_and_ap():
     gt = np.array([[0, 0, 10, 10], [20, 20, 30, 30]], float)
     pred = np.array([[0, 0, 10, 10], [50, 50, 60, 60], [21, 20, 30, 30]], float)
